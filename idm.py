@@ -1013,15 +1013,6 @@ class IDMTempModel:
     def compensate(self, freq, temp_source, temp_target, tctl=None):
         if self.a_a == None or self.a_b == None or self.b_a == None or self.b_b == None:
             return freq
-        #if(self.a_a==0):
-        #    if(self.a_b==0):
-        #        f0=(freq-self.fmin-self.b_b*(temp_source-120))/(self.b_a*(temp_source-120)+1)
-        #        param_b=self.param_linear(f0,self.b_a,self.b_b)
-        #        return param_b*(temp_target-120)+f0+self.fmin
-        #    elif(self.a_b==1):
-        #        f0=(freq-self.fmin-self.b_b*temp_source)/(self.b_a*temp_source+1)
-        #        param_b=self.param_linear(f0,self.b_a,self.b_b)
-        #        return param_b*temp_target+f0+self.fmin
         A=4*(temp_source*self.a_a)**2+4*temp_source*self.a_a*self.b_a+self.b_a**2+4*self.a_a
         B=8*temp_source**2*self.a_a*self.a_b+4*temp_source*(self.a_a*self.b_b+self.a_b*self.b_a)+2*self.b_a*self.b_b+4*self.a_b-4*(freq-self.fmin)*self.a_a
         C=4*(temp_source*self.a_b)**2+4*temp_source*self.a_b*self.b_b+self.b_b**2-4*(freq-self.fmin)*self.a_b
