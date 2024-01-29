@@ -470,7 +470,7 @@ class IDMProbe:
             z_compensation = (
                 axis_twist_compensation.get_z_compensation_value(pos))
         sample["dist"] = self.freq_to_dist(sample["freq"], sample["temp"])
-        if sample["dist"]~=None:
+        if sample["dist"]!=None:
             sample["dist"]=sample["dist"]+z_compensation
         sample["pos"] = pos
         sample["vel"] = vel
