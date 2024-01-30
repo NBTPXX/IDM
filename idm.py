@@ -1889,12 +1889,12 @@ class IDMMeshHelper:
 
     def _generate_matrix(self, clusters):
         matrix = []
-        td = self.idm.trigger_distance
+        td = self.beacon.trigger_distance
         empty_clusters = []
         for yi in range(self.res_y):
             line = []
             for xi in range(self.res_x):
-                cluster = clusters.get((xi,yi), None)
+                cluster = clusters.get((xi, yi), None)
                 if cluster is None or len(cluster) == 0:
                     xc = xi * self.step_x + self.min_x
                     yc = yi * self.step_y + self.min_y
@@ -1925,8 +1925,8 @@ class IDMMeshHelper:
 
         if z_offset is not None:
             for i, line in enumerate(matrix):
-                matrix[i] = [z-z_offset for z in line]
-            return (False, matrix)
+                matrix[i] = [z - z_offset for z in line]
+        return (False, matrix)
             
     def _apply_mesh(self, matrix, gcmd):
         params = self.bm.bmc.mesh_config
