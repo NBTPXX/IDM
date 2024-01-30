@@ -1889,7 +1889,7 @@ class IDMMeshHelper:
 
     def _generate_matrix(self, clusters):
         matrix = []
-        td = self.beacon.trigger_distance
+        td = self.idm.trigger_distance
         empty_clusters = []
         for yi in range(self.res_y):
             line = []
