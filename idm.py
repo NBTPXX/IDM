@@ -322,7 +322,7 @@ class IDMProbe:
             if "z" not in kin_status["homed_axes"]:
                 self.toolhead.get_last_move_time()
                 pos = self.toolhead.get_position()
-                 pos[2] = (
+                pos[2] = (
                     kin_status["axis_maximum"][2]
                     - 2.0
                     - gcmd.get_float("CEIL", self.cal_ceil)
