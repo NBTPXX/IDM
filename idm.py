@@ -5,6 +5,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import threading
+import multiprocessing
+import traceback
 import logging
 import chelper
 import pins
@@ -86,7 +88,9 @@ class IDMProbe:
             config.getfloat("filter_beta", 0.000001),
         )
         self.trapq = None
-
+        self._last_trapq_move = None
+        self.mod_axis_twist_comp = None
+        
         mainsync = self.printer.lookup_object("mcu")._clocksync
         self._mcu = MCU(config, SecondarySync(self.reactor, mainsync))
         self.printer.add_object("mcu " + self.name, self._mcu)
@@ -131,7 +135,10 @@ class IDMProbe:
 
     def _handle_connect(self):
         self.phoming = self.printer.lookup_object("homing")
-
+        self.mod_axis_twist_comp = self.printer.lookup_object(
+            "axis_twist_compensation", None
+        )
+        
         # Ensure streaming mode is stopped
         self.idm_stream_cmd.send([0])
 
@@ -174,7 +181,11 @@ class IDMProbe:
             cq=self.cmd_queue)
 
     def stats(self, eventtime):
-        return False, "%s: coil_temp=%.1f" % (self.name, self.last_temp)
+        return False, "%s: coil_temp=%.1f refs=%s" % (
+            self.name,
+            self.last_temp,
+            self._stream_en,
+        )
 
     # Virtual endstop
 
@@ -311,7 +322,11 @@ class IDMProbe:
             if "z" not in kin_status["homed_axes"]:
                 self.toolhead.get_last_move_time()
                 pos = self.toolhead.get_position()
-                pos[2] = kin_status["axis_maximum"][2] - 1.0
+                 pos[2] = (
+                    kin_status["axis_maximum"][2]
+                    - 2.0
+                    - gcmd.get_float("CEIL", self.cal_ceil)
+                )
                 self.toolhead.set_position(pos, homing_axes=[2])
                 forced_z = True
 
@@ -458,20 +473,13 @@ class IDMProbe:
         self._check_hardware(sample)
 
     def _enrich_sample(self, sample):
-        pos, vel = self._get_trapq_position(sample["time"])
-        # get z compensation from axis_twist_compensation        
-        if pos is None:
-            sample["dist"] = self.freq_to_dist(sample["freq"], sample["temp"])
-            return
-        axis_twist_compensation = self.printer.lookup_object(
-            'axis_twist_compensation', None)
-        z_compensation = 0
-        if axis_twist_compensation is not None:
-            z_compensation = (
-                axis_twist_compensation.get_z_compensation_value(pos))
         sample["dist"] = self.freq_to_dist(sample["freq"], sample["temp"])
-        if sample["dist"]!=None:
-            sample["dist"]=sample["dist"]+z_compensation
+        pos, vel = self._get_trapq_position(sample["time"])
+        
+        if pos is None:
+            return
+        if sample["dist"] is not None and self.mod_axis_twist_comp:
+            sample["dist"] -= self.mod_axis_twist_comp.get_z_compensation_value(pos)
         sample["pos"] = pos
         sample["vel"] = vel
 
@@ -588,12 +596,20 @@ class IDMProbe:
         self._stream_flush_schedule()
 
     def _get_trapq_position(self, print_time):
-        ffi_main, ffi_lib = chelper.get_ffi()
-        data = ffi_main.new("struct pull_move[1]")
-        count = ffi_lib.trapq_extract_old(self.trapq, data, 1, 0.0, print_time)
-        if not count:
-            return None, None
-        move = data[0]
+        move = None
+        if self._last_trapq_move:
+            last = self._last_trapq_move
+            last_end = last.print_time + last.move_t
+            if last.print_time <= print_time <= last_end:
+                move = last
+        if move is None:
+            ffi_main, ffi_lib = chelper.get_ffi()
+            data = ffi_main.new("struct pull_move[1]")
+            count = ffi_lib.trapq_extract_old(self.trapq, data, 1, 0.0, print_time)
+            if not count:
+                return None, None
+            move = data[0]
+        self._last_trapq_move = move
         move_time = max(0.0, min(move.move_t, print_time - move.print_time))
         dist = (move.start_v + .5 * move.accel * move_time) * move_time
         pos = (move.start_x + move.x_r * dist, move.start_y + move.y_r * dist,
@@ -869,9 +885,9 @@ class IDMProbe:
         old_offset = self.model.offset
         self.model.offset += offset
         self.model.save(self, False)
-        gcmd.respond_info("IDM model offset has been updated\n"
+        gcmd.respond_info("IDM model offset has been updated to %.5f\n"
                 "You must run the SAVE_CONFIG command now to update the\n"
-                "printer config file and restart the printer.")
+                "printer config file and restart the printer.")% (self.model.offset,)
         self.model.offset = old_offset
 
 class IDMModel:
@@ -1385,13 +1401,16 @@ class IDMMeshHelper:
     @classmethod
     def create(cls, idm, config):
         if config.has_section("bed_mesh"):
-            return IDMMeshHelper(idm, config)
+            mesh_config = config.getsection("bed_mesh")
+            if mesh_config.get("mesh_radius", None) is not None:
+                return None  # Use normal bed meshing for round beds
+            return IDMMeshHelper(idm, config, mesh_config)
         else:
             return None
 
-    def __init__(self, idm, config):
+    def __init__(self, idm, config, mesh_config):
         self.idm = idm
-        mesh_config = self.mesh_config = config.getsection("bed_mesh")
+        self.mesh_config = mesh_config
         self.bm = self.idm.printer.load_object(mesh_config, "bed_mesh")
 
         self.speed = mesh_config.getfloat("speed", 50.0, above=0.0,
@@ -1413,6 +1432,9 @@ class IDMMeshHelper:
         self.overscan = config.getfloat("mesh_overscan", -1, minval=0)
         self.cluster_size = config.getfloat("mesh_cluster_size", 1, minval=0)
         self.runs = config.getint("mesh_runs", 1, minval=1)
+        self.adaptive_margin = mesh_config.getfloat(
+            "adaptive_margin", 0, note_valid=False
+        )
         
         if self.zero_ref_pos is not None and self.rri is not None:
             logging.info("IDM: both 'zero_reference_position' and "
@@ -1432,6 +1454,11 @@ class IDMMeshHelper:
             y_max = max(start[1], end[1])
             self.faulty_regions.append(Region(x_min, x_max, y_min, y_max))
 
+        self.exclude_object = None
+        self.idm.printer.register_event_handler(
+            "klippy:connect", self._handle_connect
+        )
+        
         self.gcode = self.idm.printer.lookup_object("gcode")
         self.prev_gcmd = self.gcode.register_command("BED_MESH_CALIBRATE", None)
         self.gcode.register_command(
@@ -1450,7 +1477,10 @@ class IDMMeshHelper:
             self.calibrate(gcmd)
         else:
             self.prev_gcmd(gcmd)
-
+    
+    def _handle_connect(self):
+        self.exclude_object = self.idm.printer.lookup_object("exclude_object", None)
+        
     def _handle_mcu_identify(self):
         # Auto determine a safe overscan amount
         toolhead = self.idm.printer.lookup_object("toolhead")
@@ -1559,7 +1589,8 @@ class IDMMeshHelper:
                 self.def_max_x, self.def_max_y, lambda v, d: min(v, d))
         self.res_x, self.res_y = coord_fallback(gcmd, "PROBE_COUNT", int,
                 self.def_res_x, self.def_res_y, lambda v, _d: max(v, 3))
-
+        self.profile_name = gcmd.get("PROFILE", "default")
+        
         if self.min_x > self.max_x:
             self.min_x, self.max_x = (max(self.max_x, self.def_min_x),
                                       min(self.min_x, self.def_max_x))
@@ -1581,6 +1612,16 @@ class IDMMeshHelper:
         else:
             self.zero_ref_mode = None
             
+        # If the user requested adaptive meshing, try to shrink the values we just configured
+        if gcmd.get_int("ADAPTIVE", 0):
+            if self.exclude_object is not None:
+                margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
+                self._shrink_to_excluded_objects(gcmd, margin)
+            else:
+                gcmd.respond_info(
+                    "Requested adaptive mesh, but [exclude_object] is not enabled. Ignoring."
+                )
+        
         self.step_x = (self.max_x - self.min_x) / (self.res_x - 1)
         self.step_y = (self.max_y - self.min_y) / (self.res_y - 1)
 
@@ -1615,8 +1656,53 @@ class IDMMeshHelper:
         finally:
             self.idm._stop_streaming()
 
-        clusters = self._interpolate_faulty(clusters)
-        self._apply_mesh(clusters, gcmd)
+        matrix = self._process_clusters(clusters, gcmd)
+        self._apply_mesh(matrix, gcmd)
+
+    def _shrink_to_excluded_objects(self, gcmd, margin):
+        bound_min_x, bound_max_x = None, None
+        bound_min_y, bound_max_y = None, None
+        objects = self.exclude_object.get_status().get("objects", {})
+        if len(objects) == 0:
+            return
+
+        for obj in objects:
+            for point in obj["polygon"]:
+                bound_min_x = opt_min(bound_min_x, point[0])
+                bound_max_x = opt_max(bound_max_x, point[0])
+                bound_min_y = opt_min(bound_min_y, point[1])
+                bound_max_y = opt_max(bound_max_y, point[1])
+        bound_min_x -= margin
+        bound_max_x += margin
+        bound_min_y -= margin
+        bound_max_y += margin
+
+        # Calculate original step size and apply the new bounds
+        orig_span_x = self.max_x - self.min_x
+        orig_span_y = self.max_y - self.min_y
+        orig_step_x = orig_span_x / (self.res_x - 1)
+        orig_step_y = orig_span_y / (self.res_y - 1)
+
+        if bound_min_x >= self.min_x:
+            self.min_x = bound_min_x
+        if bound_max_x <= self.max_x:
+            self.max_x = bound_max_x
+        if bound_min_y >= self.min_y:
+            self.min_y = bound_min_y
+        if bound_max_y <= self.max_y:
+            self.max_y = bound_max_y
+
+        # Update resolution to retain approximately the same step size as before
+        self.res_x = math.ceil(self.res_x * (self.max_x - self.min_x) / orig_span_x)
+        self.res_y = math.ceil(self.res_y * (self.max_y - self.min_y) / orig_span_y)
+        # Guard against bicubic interpolation with 3 points on one axis
+        min_res = 3
+        if max(self.res_x, self.res_y) > 6 and min(self.res_x, self.res_y) < 4:
+            min_res = 4
+        self.res_x = max(self.res_x, min_res)
+        self.res_y = max(self.res_y, min_res)
+
+        self.profile_name = None
 
     def _fly_path(self, path, speed, runs):
         # Run through the path
@@ -1624,6 +1710,7 @@ class IDMMeshHelper:
             p = path if i % 2 == 0 else reversed(path)
             for (x,y) in p:
                 self.toolhead.manual_move([x, y, None], speed)
+        self.toolhead.dwell(0.251)
         self.toolhead.wait_moves()
 
     def _collect_zero_ref(self, speed, coord):
@@ -1701,6 +1788,39 @@ class IDMMeshHelper:
 
         return clusters
 
+    def _process_clusters(self, raw_clusters, gcmd):
+        parent_conn, child_conn = multiprocessing.Pipe()
+
+        def do():
+            try:
+                child_conn.send((False, self._do_process_clusters(raw_clusters)))
+            except:
+                child_conn.send((True, traceback.format_exc()))
+            child_conn.close()
+
+        child = multiprocessing.Process(target=do)
+        child.daemon = True
+        child.start()
+        reactor = self.idm.reactor
+        eventtime = reactor.monotonic()
+        while child.is_alive():
+            eventtime = reactor.pause(eventtime + 0.1)
+        is_err, result = parent_conn.recv()
+        child.join()
+        parent_conn.close()
+        if is_err:
+            raise Exception("Error processing mesh: %s" % (result,))
+        else:
+            is_inner_err, inner_result = result
+            if is_inner_err:
+                raise gcmd.error(inner_result)
+            else:
+                return inner_result
+
+    def _do_process_clusters(self, raw_clusters):
+        clusters = self._interpolate_faulty(raw_clusters)
+        return self._generate_matrix(clusters)
+        
     def _is_faulty_coordinate(self, x, y, add_offsets=False):
         if add_offsets:
             xo, yo = self.idm.x_offset, self.idm.y_offset
@@ -1767,9 +1887,10 @@ class IDMMeshHelper:
 
         return clusters
 
-    def _apply_mesh(self, clusters, gcmd):
+    def _generate_matrix(self, clusters):
         matrix = []
         td = self.idm.trigger_distance
+        empty_clusters = []
         for yi in range(self.res_y):
             line = []
             for xi in range(self.res_x):
@@ -1777,15 +1898,18 @@ class IDMMeshHelper:
                 if cluster is None or len(cluster) == 0:
                     xc = xi * self.step_x + self.min_x
                     yc = yi * self.step_y + self.min_y
-                    logging.info("Cluster (%.3f,%.3f)[%d,%d] is empty!"
-                                 % (xc, yc,
-                                    xi, yi))
-                    err = ("Empty clusters found\n"
-                           "Try increasing mesh cluster_size or slowing down")
-                    raise self.gcode.error(err)
-                data = [td-d for d in cluster]
-                line.append(median(data))
+                    empty_clusters.append("  (%.3f,%.3f)[%d,%d]" % (xc, yc, xi, yi))
+                else:
+                    data = [td - d for d in cluster]
+                    line.append(median(data))
             matrix.append(line)
+        if empty_clusters:
+            err = (
+                "Empty clusters found\n"
+                "Try increasing mesh cluster_size or slowing down.\n"
+                "The following clusters were empty:\n"
+            ) + "\n".join(empty_clusters)
+            return (True, err)
 
         z_offset = None
         if self.zero_ref_mode and self.zero_ref_mode[0] == "rri":
@@ -1802,7 +1926,9 @@ class IDMMeshHelper:
         if z_offset is not None:
             for i, line in enumerate(matrix):
                 matrix[i] = [z-z_offset for z in line]
-
+            return (False, matrix)
+            
+    def _apply_mesh(self, matrix, gcmd):
         params = self.bm.bmc.mesh_config
         params["min_x"] = self.min_x
         params["max_x"] = self.max_x
@@ -1810,14 +1936,18 @@ class IDMMeshHelper:
         params["max_y"] = self.max_y
         params["x_count"] = self.res_x
         params["y_count"] = self.res_y
-        mesh = bed_mesh.ZMesh(params)
+        try:
+            mesh = bed_mesh.ZMesh(params)
+        except TypeError:
+            mesh = bed_mesh.ZMesh(params, self.profile_name)
         try:
             mesh.build_mesh(matrix)
         except bed_mesh.BedMeshError as e:
             raise self.gcode.error(str(e))
         self.bm.set_mesh(mesh)
         self.gcode.respond_info("Mesh calibration complete")
-        self.bm.save_profile(gcmd.get("PROFILE", "default"))
+        if self.profile_name is not None:
+            self.bm.save_profile(self.profile_name)
 
 class Region:
     def __init__(self, x_min, x_max, y_min, y_max):
@@ -1868,6 +1998,17 @@ def coord_fallback(gcmd, name, parse, def_x, def_y, map=lambda v, d: v):
 def median(samples):
     return float(np.median(samples))
 
+def opt_min(a, b):
+    if a is None:
+        return b
+    return min(a, b)
+
+
+def opt_max(a, b):
+    if a is None:
+        return b
+    return max(a, b)
+    
 def load_config(config):
     idm = IDMProbe(config)
     config.get_printer().add_object("probe", IDMProbeWrapper(idm))
