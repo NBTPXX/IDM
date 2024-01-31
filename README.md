@@ -2,7 +2,7 @@
 
 #### 介绍
 idm scanner 上位机python代码
-修改自[beacon](https://github.com/beacon3d/beacon_klipper/blob/master)
+修改自[beacon](https://github.com/beacon3d/beacon_klipper/tree/master)
 
 #### 软件架构
 软件架构说明
