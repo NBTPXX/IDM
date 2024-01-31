@@ -1440,7 +1440,8 @@ class IDMMeshHelper:
             logging.info("IDM: both 'zero_reference_position' and "
                     "'relative_reference_index' options are specified. The"
                     " former will be used")
-
+        
+        self.faulty_region_= []
         self.faulty_regions = []
         for i in list(range(1, 100, 1)):
             start = mesh_config.getfloatlist("faulty_region_%d_min" % (i,), None,
@@ -1453,7 +1454,8 @@ class IDMMeshHelper:
             y_min = min(start[1], end[1])
             y_max = max(start[1], end[1])
             self.faulty_regions.append(Region(x_min, x_max, y_min, y_max))
-
+            self.faulty_region_.append([x_min, y_min, x_max, y_max])
+        self.faulty_region_ = np.array(self.faulty_region_).T
         self.exclude_object = None
         self.idm.printer.register_event_handler(
             "klippy:connect", self._handle_connect
@@ -1835,11 +1837,19 @@ class IDMMeshHelper:
         faulty_indexes = []
         position = np.array(list(clusters.keys()))
         (xi_max,yi_max) = position.T.max(axis = 1)
-        pos_temp = (position.T*[[self.step_x],[self.step_y]]+[[self.min_x],[self.min_y]]).T
-        for i in range(len(pos_temp)):
-            if self._is_faulty_coordinate(pos_temp[i][0], pos_temp[i][1]):
-                clusters[tuple(position[i])] = None
-                faulty_indexes.append(tuple(position[i]))
+        pos_temp = (position.T*[[self.step_x],[self.step_y]]+[[self.min_x],[self.min_y]])
+        if len(self.faulty_region_.shape) > 1:
+            length=self.faulty_region_.shape[1]
+            flag = np.array(
+                [
+                    (pos_temp > self.faulty_region_[:2].reshape(1,2,length).T).T.all(axis=1),
+                    (pos_temp < self.faulty_region_[2:].reshape(1,2,length).T).T.all(axis=1)
+                ]
+            ).all(axis = 0).any(axis = 1)
+            for i in range(len(flag)):
+                if(flag[i]):
+                    clusters[tuple(position[i])] = None
+                    faulty_indexes.append(tuple(position[i]))
         del pos_temp
 
         def get_nearest(start, dx, dy):
