@@ -885,9 +885,9 @@ class IDMProbe:
         old_offset = self.model.offset
         self.model.offset += offset
         self.model.save(self, False)
-        gcmd.respond_info("IDM model offset has been updated to {}.\n"
+        gcmd.respond_info(f"IDM model offset has been updated to {self.model.offset}.\n"
                 "You must run the SAVE_CONFIG command now to update the\n"
-                "printer config file and restart the printer.".format(self.model.offset))
+                "printer config file and restart the printer.")
         self.model.offset = old_offset
 
 class IDMModel:
@@ -1833,29 +1833,22 @@ class IDMMeshHelper:
 
     def _interpolate_faulty(self, clusters):
         faulty_indexes = []
-        xi_max = 0
-        yi_max = 0
-        for (xi, yi), points in clusters.items():
-            if xi > xi_max:
-                xi_max = xi
-            if yi > yi_max:
-                yi_max = yi
-            xc = xi * self.step_x + self.min_x
-            yc = yi * self.step_y + self.min_y
-            if self._is_faulty_coordinate(xc, yc):
-                clusters[(xi, yi)] = None
-                faulty_indexes.append((xi, yi))
+        position = np.array(list(clusters.keys()))
+        (xi_max,yi_max) = position.T.max(axis = 1)
+        pos_temp = (position.T*[[self.step_x],[self.step_y]]+[[self.min_x],[self.min_y]]).T
+        for i in range(len(pos_temp)):
+            if self._is_faulty_coordinate(pos_temp[i][0], pos_temp[i][1]):
+                clusters[tuple(position[i])] = None
+                faulty_indexes.append(tuple(position[i]))
+        del pos_temp
 
         def get_nearest(start, dx, dy):
-            (x, y) = start
-            x += dx
-            y += dy
-            while (x >= 0 and x <= xi_max and
-                   y >= 0 and y <= yi_max):
-                if clusters[(x, y)] is not None:
-                    return (abs(x-start[0])+abs(y-start[0]), median(clusters[(x,y)]))
-                x += dx
-                y += dy
+            inputs = np.array(start)
+            inputs += [dx,dy]
+            while ((inputs >= 0).all() and (inputs <= [xi_max,yi_max]).all()):
+                if clusters[tuple(inputs)] is not None:
+                    return (abs(inputs-start[0]).sum(), median(clusters[tuple(inputs)]))
+                inputs += [dx,dy]
             return None
 
         def interp_weighted(lower, higher):
