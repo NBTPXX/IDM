@@ -1856,8 +1856,8 @@ class IDMMeshHelper:
             inputs = np.array(start)
             inputs += [dx,dy]
             while ((inputs >= 0).all() and (inputs <= [xi_max,yi_max]).all()):
-                if clusters[tuple(inputs)] is not None:
-                    return (abs(inputs-start[0]).sum(), median(clusters[tuple(inputs)]))
+                if clusters.get(tuple(inputs),None) is not None:
+                    return (abs(inputs-np.array(start)).sum(), median(clusters[tuple(inputs)]))
                 inputs += [dx,dy]
             return None
 
