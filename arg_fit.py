@@ -91,7 +91,7 @@ def data_process(path):
     elif(axis<0):
         linear_params1, params_covariance = curve_fit(line0, temp[20:],freq[20:],bounds=([0,-np.inf],[np.inf,np.inf]),maxfev=100000,ftol=1e-10,xtol=1e-10)
         plt.plot(temp[20:],line0(temp[20:],linear_params1[0],linear_params1[1]))
-        return [linear_params1[0],0,line0(axis,linear_params1[0],linear_params1[1])]
+        return [linear_params1[0],0,line0(0,linear_params1[0],linear_params1[1])]
     plt.plot(temp[20:],line_fit(temp[20:],linear_params[0],linear_params[1],linear_params[2]))
     linear_params[2]=line_fit(axis,linear_params[0],linear_params[1],linear_params[2])
     return linear_params
