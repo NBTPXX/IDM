@@ -566,11 +566,18 @@ class IDMProbe:
                     self._enrich_sample_time(sample)
                     self._data_filter.update(sample["time"], sample["data"])
                     self._enrich_sample_freq(sample)
+                    self._enrich_sample(sample)
 
                     if len(self._stream_callbacks) > 0:
-                        self._enrich_sample(sample)
                         for cb in list(self._stream_callbacks.values()):
                             cb(sample)
+                    last = sample
+                if last is not None:
+                    last = last.copy()
+                    dist = last["dist"]
+                    if dist is None or np.isinf(dist) or np.isnan(dist):
+                        del last["dist"]
+                    self.last_received_sample = last
             except queue.Empty:
                 return
 
@@ -596,20 +603,12 @@ class IDMProbe:
         self._stream_flush_schedule()
 
     def _get_trapq_position(self, print_time):
-        move = None
-        if self._last_trapq_move:
-            last = self._last_trapq_move[0]
-            last_end = last.print_time + last.move_t
-            if last.print_time <= print_time < last_end:
-                move = last
-        if move is None:
-            ffi_main, ffi_lib = chelper.get_ffi()
-            data = ffi_main.new("struct pull_move[1]")
-            count = ffi_lib.trapq_extract_old(self.trapq, data, 1, 0.0, print_time)
-            if not count:
-                return None, None
-            self._last_trapq_move = data
-            move = data[0]        
+        ffi_main, ffi_lib = chelper.get_ffi()
+        data = ffi_main.new("struct pull_move[1]")
+        count = ffi_lib.trapq_extract_old(self.trapq, data, 1, 0.0, print_time)
+        if not count:
+            return None, None
+        move = data[0]
         move_time = max(0.0, min(move.move_t, print_time - move.print_time))
         dist = (move.start_v + .5 * move.accel * move_time) * move_time
         pos = (move.start_x + move.x_r * dist, move.start_y + move.y_r * dist,
@@ -618,8 +617,7 @@ class IDMProbe:
         return pos, velocity
 
     def _sample_printtime_sync(self, skip=0, count=1):
-        toolhead = self.printer.lookup_object("toolhead")
-        move_time = toolhead.get_last_move_time()
+        move_time = self.toolhead.get_last_move_time()
         settle_clock = self._mcu.print_time_to_clock(move_time)
         samples = []
         total = skip + count
@@ -681,6 +679,7 @@ class IDMProbe:
             model = self.model.name
         return {
             "last_sample": self.last_sample,
+            "last_received_sample": self.last_received_sample,
             "model": model,
         }
 
@@ -775,7 +774,7 @@ class IDMProbe:
             "time": sample["time"],
             "value": last_value,
             "temp": temp,
-            "dist": dist,
+            "dist": None if np.isinf(dist) or np.isnan(dist) else dist,
         }
         if dist is None:
             gcmd.respond_info("Last reading: %.2fHz, %.2fC, no model" %
@@ -1410,6 +1409,7 @@ class IDMMeshHelper:
 
     def __init__(self, idm, config, mesh_config):
         self.idm = idm
+        self.scipy = None
         self.mesh_config = mesh_config
         self.bm = self.idm.printer.load_object(mesh_config, "bed_mesh")
 
@@ -1721,10 +1721,20 @@ class IDMMeshHelper:
         self.toolhead.manual_move([x-xo, y-yo, None], speed)
         (dist, _samples) = self.idm._sample(50, 10)
         self.zero_ref_val = dist
-    
+
     def _is_valid_position(self, x, y):
         return self.min_x <= x <= self.max_x and self.min_y <= y <= self.min_y
 
+    def _is_faulty_coordinate(self, x, y, add_offsets=False):
+        if add_offsets:
+            xo, yo = self.idm.x_offset, self.idm.y_offset
+            x += xo
+            y += yo
+        for r in self.faulty_regions:
+            if r.is_point_within(x, y):
+                return True
+        return False
+        
     def _sample_mesh(self, gcmd, path, speed, runs):
         cs = gcmd.get_float("CLUSTER_SIZE", self.cluster_size, minval=0.0)
         zcs = self.zero_ref_pos_cluster_size
@@ -1753,6 +1763,8 @@ class IDMMeshHelper:
             # Calculate coordinate of the cluster we are in
             xi = int(round((x - min_x) / self.step_x))
             yi = int(round((y - min_y) / self.step_y))
+            if xi < 0 or self.res_x <= xi or yi < 0 or self.res_y <= yi:
+                return
 
             # If there's a cluster size limit, apply it here
             if cs > 0:
@@ -1792,10 +1804,11 @@ class IDMMeshHelper:
 
     def _process_clusters(self, raw_clusters, gcmd):
         parent_conn, child_conn = multiprocessing.Pipe()
+        dump_file = gcmd.get("FILENAME", None)
 
         def do():
             try:
-                child_conn.send((False, self._do_process_clusters(raw_clusters)))
+                child_conn.send((False, self._do_process_clusters(raw_clusters,dump_file)))
             except:
                 child_conn.send((True, traceback.format_exc()))
             child_conn.close()
@@ -1819,101 +1832,114 @@ class IDMMeshHelper:
             else:
                 return inner_result
 
-    def _do_process_clusters(self, raw_clusters):
-        clusters = self._interpolate_faulty(raw_clusters)
-        return self._generate_matrix(clusters)
-        
-    def _is_faulty_coordinate(self, x, y, add_offsets=False):
-        if add_offsets:
-            xo, yo = self.idm.x_offset, self.idm.y_offset
-            x += xo
-            y += yo
-        for r in self.faulty_regions:
-            if r.is_point_within(x, y):
-                return True
-        return False
+    def _do_process_clusters(self, raw_clusters, dump_file):
+        if dump_file:
+            with open(dump_file, "w") as f:
+                f.write("x,y,xp,xy,dist\n")
+                for yi in range(self.res_y):
+                    line = []
+                    for xi in range(self.res_x):
+                        cluster = raw_clusters.get((xi, yi), [])
+                        xp = xi * self.step_x + self.min_x
+                        yp = yi * self.step_y + self.min_y
+                        for dist in cluster:
+                            f.write("%d,%d,%f,%f,%f\n" % (xi, yi, xp, yp, dist))
 
-    def _interpolate_faulty(self, clusters):
-        faulty_indexes = []
-        position = np.array(list(clusters.keys()))
-        (xi_max,yi_max) = position.T.max(axis = 1)
-        pos_temp = (position.T*[[self.step_x],[self.step_y]]+[[self.min_x],[self.min_y]])
-        if len(self.faulty_region_.shape) > 1:
-            length=self.faulty_region_.shape[1]
-            flag = np.array(
-                [
-                    (pos_temp > self.faulty_region_[:2].reshape(1,2,length).T).T.all(axis=1),
-                    (pos_temp < self.faulty_region_[2:].reshape(1,2,length).T).T.all(axis=1)
-                ]
-            ).all(axis = 0).any(axis = 1)
-            for i in range(len(flag)):
-                if(flag[i]):
-                    clusters[tuple(position[i])] = None
-                    faulty_indexes.append(tuple(position[i]))
-        del pos_temp
+        mask = self._generate_fault_mask()
+        matrix, faulty_regions = self._generate_matrix(raw_clusters, mask)
+        if len(faulty_regions) > 0:
+            (error, interpolator_or_msg) = self._load_interpolator()
+            if error:
+                return (True, interpolator_or_msg)
+            matrix = self._interpolate_faulty(
+                matrix, faulty_regions, interpolator_or_msg
+            )
+        err = self._check_matrix(matrix)
+        if err is not None:
+            return (True, err)
+        return (False, self._finalize_matrix(matrix))
 
-        def get_nearest(start, dx, dy):
-            inputs = np.array(start)
-            inputs += [dx,dy]
-            while ((inputs >= 0).all() and (inputs <= [xi_max,yi_max]).all()):
-                if clusters.get(tuple(inputs),None) is not None:
-                    return (abs(inputs-np.array(start)).sum(), median(clusters[tuple(inputs)]))
-                inputs += [dx,dy]
+    def _generate_fault_mask(self):
+        if len(self.faulty_regions) == 0:
             return None
+        mask = np.full((self.res_y, self.res_x), True)
+        for r in self.faulty_regions:
+            r_xmin = int(math.ceil((r.x_min - self.min_x) / self.step_x))
+            r_ymin = int(math.ceil((r.y_min - self.min_y) / self.step_y))
+            r_xmax = int(math.floor((r.x_max - self.min_x) / self.step_x))
+            r_ymax = int(math.floor((r.y_max - self.min_y) / self.step_y))
+            for y in range(r_ymin, r_ymax + 1):
+                for x in range(r_xmin, r_xmax + 1):
+                    mask[(y, x)] = False
+        return mask
 
-        def interp_weighted(lower, higher):
-            if lower is None and higher is None:
-                return None
-            if lower is None and higher is not None:
-                return higher[1]
-            elif lower is not None and higher is None:
-                return lower[1]
+    def _generate_matrix(self, raw_clusters, mask):
+        faulty_indexes = []
+        matrix = np.empty((self.res_y, self.res_x))
+        for (x, y), values in raw_clusters.items():
+            if mask is None or mask[(y, x)]:
+                matrix[(y, x)] = self.idm.trigger_distance - median(values)
             else:
-                return ((lower[1] * lower[0] + higher[1] * higher[0]) /
-                        (lower[0] + higher[0]))
+                matrix[(y, x)] = np.nan
+                faulty_indexes.append((y, x))
+        return matrix, faulty_indexes
 
-        for coord in faulty_indexes:
-            xl = get_nearest(coord, -1,  0)
-            xh = get_nearest(coord,  1,  0)
-            xavg = interp_weighted(xl, xh)
-            yl = get_nearest(coord,  0, -1)
-            yh = get_nearest(coord,  0,  1)
-            yavg = interp_weighted(yl, yh)
-            avg = None
-            if xavg is not None and yavg is None:
-                avg = xavg
-            elif xavg is None and yavg is not None:
-                avg = yavg
-            else:
-                avg = (xavg + yavg) / 2.0
-            clusters[coord] = [avg]
+    def _load_interpolator(self):
+        if not self.scipy:
+            try:
+                self.scipy = importlib.import_module("scipy")
+            except ImportError:
+                msg = (
+                    "Could not load `scipy`. To install it, simply re-run "
+                    "the IDM `install.sh` script. This module is required "
+                    "when using faulty regions when bed meshing."
+                )
+                return (True, msg)
+        if hasattr(self.scipy.interpolate, "RBFInterpolator"):
 
-        return clusters
+            def rbf_interp(points, values, faulty):
+                return self.scipy.interpolate.RBFInterpolator(points, values, 64)(
+                    faulty
+                )
 
-    def _generate_matrix(self, clusters):
-        matrix = []
-        td = self.idm.trigger_distance
+            return (False, rbf_interp)
+        else:
+
+            def linear_interp(points, values, faulty):
+                return self.scipy.interpolate.griddata(
+                    points, values, faulty, method="linear"
+                )
+
+            return (False, linear_interp)
+
+    def _interpolate_faulty(self, matrix, faulty_indexes, interpolator):
+        ys, xs = np.mgrid[0 : matrix.shape[0], 0 : matrix.shape[1]]
+        points = np.array([ys.flatten(), xs.flatten()]).T
+        values = matrix.reshape(-1)
+        good = ~np.isnan(values)
+        fixed = interpolator(points[good], values[good], faulty_indexes)
+        matrix[tuple(np.array(faulty_indexes).T)] = fixed
+        return matrix
+
+    def _check_matrix(self, matrix):
         empty_clusters = []
         for yi in range(self.res_y):
-            line = []
             for xi in range(self.res_x):
-                cluster = clusters.get((xi, yi), None)
-                if cluster is None or len(cluster) == 0:
+                if np.isnan(matrix[(yi, xi)]):
                     xc = xi * self.step_x + self.min_x
                     yc = yi * self.step_y + self.min_y
                     empty_clusters.append("  (%.3f,%.3f)[%d,%d]" % (xc, yc, xi, yi))
-                else:
-                    data = [td - d for d in cluster]
-                    line.append(median(data))
-            matrix.append(line)
         if empty_clusters:
             err = (
                 "Empty clusters found\n"
                 "Try increasing mesh cluster_size or slowing down.\n"
                 "The following clusters were empty:\n"
             ) + "\n".join(empty_clusters)
-            return (True, err)
+            return err
+        else:
+            return None
 
+    def _finalize_matrix(self, matrix):
         z_offset = None
         if self.zero_ref_mode and self.zero_ref_mode[0] == "rri":
             rri = self.zero_ref_mode[1]
@@ -1924,13 +1950,12 @@ class IDMMeshHelper:
                 rri_y = int(math.floor(rri / self.res_x))
                 z_offset = matrix[rri_y][rri_x]
         elif self.zero_ref_mode and self.zero_ref_mode[0] == "pos":
-            z_offset = td - self.zero_ref_val
+            z_offset = self.idm.trigger_distance - self.zero_ref_val
 
         if z_offset is not None:
-            for i, line in enumerate(matrix):
-                matrix[i] = [z - z_offset for z in line]
-        return (False, matrix)
-            
+            matrix = matrix - z_offset
+        return matrix.tolist()
+
     def _apply_mesh(self, matrix, gcmd):
         params = self.bm.bmc.mesh_config
         params["min_x"] = self.min_x

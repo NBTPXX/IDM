@@ -12,9 +12,6 @@ fi
 
 # install idm requirements to env
 echo "idm: installing python requirements to env, this may take 10+ minutes."
-sudo apt-get install g++ 
-sudo apt-get install gfortran 
-sudo apt-get install libopenblas-dev
 "${KENV}/bin/pip" install -r "${BKDIR}/requirements.txt"
 
 # update link to idm.py
