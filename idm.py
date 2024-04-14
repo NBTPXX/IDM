@@ -1755,7 +1755,7 @@ class IDMMeshHelper:
             x += xo
             y += yo
 
-            if d is None math.isinf(d):
+            if d is None or math.isinf(d):
                 if self._is_valid_position(x, y):
                     invalid_samples[0] += 1
                 return
