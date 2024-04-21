@@ -24,6 +24,7 @@ from . import probe
 from . import bed_mesh
 from . import thermistor
 from . import adc_temperature
+from . import manual_probe
 from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
 
@@ -42,6 +43,7 @@ class IDMProbe:
 
         self.x_offset = config.getfloat("x_offset", 0.0)
         self.y_offset = config.getfloat("y_offset", 0.0)
+        self.probe_calibrate_z = 0.
 
         self.trigger_distance = config.getfloat("trigger_distance", 2.0)
         self.trigger_dive_threshold = config.getfloat("trigger_dive_threshold", 1.0)
@@ -128,12 +130,45 @@ class IDMProbe:
                                     desc=self.cmd_PROBE_help)
         self.gcode.register_command("PROBE_ACCURACY", self.cmd_PROBE_ACCURACY,
                                     desc=self.cmd_PROBE_ACCURACY_help)
+        self.gcode.register_command('PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
+                                    desc=self.cmd_PROBE_CALIBRATE_help)
         self.gcode.register_command("Z_OFFSET_APPLY_PROBE",
                                     self.cmd_Z_OFFSET_APPLY_PROBE,
                                     desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
 
     # Event handlers
 
+    def _move(self, coord, speed):
+        self.printer.lookup_object('toolhead').manual_move(coord, speed)
+    cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
+
+    def probe_calibrate_finalize(self, kin_pos):
+        if kin_pos is None:
+            return
+        z_offset = self.probe_calibrate_z - kin_pos[2]
+        self.gcode.respond_info(
+            "%s: z_offset: %.3f\n"
+            "The SAVE_CONFIG command will update the printer config file\n"
+            "with the above and restart the printer." % (self.name, z_offset))
+        configfile = self.printer.lookup_object('configfile')
+        configfile.set("idm model " + self.model.name, 'model_offset', "%.3f" % (z_offset,))
+
+    def cmd_PROBE_CALIBRATE(self, gcmd):
+        manual_probe.verify_no_manual_probe(self.printer)
+        # Perform initial probe
+        lift_speed = self.get_lift_speed(gcmd)
+        curpos = self.run_probe(gcmd)
+        # Move away from the bed
+        self.probe_calibrate_z = curpos[2]
+        curpos[2] += 5.
+        self._move(curpos, lift_speed)
+        # Move the nozzle over the probe point
+        curpos[0] += self.x_offset
+        curpos[1] += self.y_offset
+        self._move(curpos, self.speed)
+        # Start manual probe
+        manual_probe.ManualProbeHelper(self.printer, gcmd,
+                                       self.probe_calibrate_finalize)
     def _handle_connect(self):
         self.phoming = self.printer.lookup_object("homing")
         self.mod_axis_twist_comp = self.printer.lookup_object(
