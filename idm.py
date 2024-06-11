@@ -1275,7 +1275,14 @@ class IDMProbeWrapper:
         return self.idm.get_lift_speed(gcmd)
     def run_probe(self, gcmd):
         return self.idm.run_probe(gcmd)
-
+    def get_probe_params(self, gcmd=None):
+        return {'probe_speed': self.idm.speed,
+            'lift_speed': self.idm.lift_speed}
+    def start_probe_session(self, gcmd):
+        self.multi_probe_begin()
+        return self
+    def end_probe_session(self):
+        self.multi_probe_end()
 class IDMTempWrapper:
     def __init__(self, idm):
         self.idm = idm
