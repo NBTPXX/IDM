@@ -93,7 +93,8 @@ class IDMProbe:
         self.trapq = None
         self._last_trapq_move = None
         self.mod_axis_twist_comp = None
-        
+        self.raw_axis_twist_comp = None
+
         mainsync = self.printer.lookup_object("mcu")._clocksync
         self._mcu = MCU(config, SecondarySync(self.reactor, mainsync))
         self.printer.add_object("mcu " + self.name, self._mcu)
@@ -174,7 +175,15 @@ class IDMProbe:
         self.mod_axis_twist_comp = self.printer.lookup_object(
             "axis_twist_compensation", None
         )
-        
+        if self.mod_axis_twist_comp is not None:
+            if not hasattr(self.mod_axis_twist_comp, "get_z_compensation_value"):
+                self.raw_axis_twist_comp = self.mod_axis_twist_comp
+                def get_z_compensation_value(self, pos):
+                    temp = list(pos)
+                    self.raw_axis_twist_comp._update_z_compensation_value(temp)
+                    return temp[2]-pos[2]
+                axis_twist_comp = type("class",(object,),{"get_z_compensation_value" : get_z_compensation_value, "raw_axis_twist_comp" : self.raw_axis_twist_comp})
+                self.mod_axis_twist_comp = axis_twist_comp()
         # Ensure streaming mode is stopped
         self.idm_stream_cmd.send([0])
 
