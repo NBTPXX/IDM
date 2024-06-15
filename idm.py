@@ -110,6 +110,8 @@ class IDMProbe:
                                             self._handle_mcu_identify)
         self._mcu.register_config_callback(self._build_config)
         self._mcu.register_response(self._handle_idm_data, "idm_data")
+        # Probe results
+        self.results = []
         # Register webhooks
         webhooks = self.printer.lookup_object("webhooks")
         self._api_dump_helper = APIDumpHelper(self)
@@ -271,7 +273,9 @@ class IDMProbe:
 
         self._start_streaming()
         try:
-            return self._probe(speed, allow_faulty=allow_faulty)
+            epos = self._probe(speed, allow_faulty=allow_faulty)
+            self.results.append(epos)
+            return epos
         finally:
             self._stop_streaming()
 
@@ -1289,9 +1293,15 @@ class IDMProbeWrapper:
             'lift_speed': self.idm.lift_speed}
     def start_probe_session(self, gcmd):
         self.multi_probe_begin()
+        self.idm.results=[]
         return self
     def end_probe_session(self):
+        self.idm.results=[]
         self.multi_probe_end()
+    def pull_probed_results(self):
+        res = self.idm.results
+        self.idm.results = []
+        return res
 class IDMTempWrapper:
     def __init__(self, idm):
         self.idm = idm
