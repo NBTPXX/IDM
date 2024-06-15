@@ -96,8 +96,15 @@ class IDMProbe:
         self.raw_axis_twist_comp = None
 
         mainsync = self.printer.lookup_object("mcu")._clocksync
-        self._mcu = MCU(config, SecondarySync(self.reactor, mainsync))
-        self.printer.add_object("mcu " + self.name, self._mcu)
+        mcu = config.get("mcu",None)
+        if not mcu is None:
+            if mcu == "mcu":
+                self._mcu = self.printer.lookup_object("mcu")
+            else:
+                self._mcu = self.printer.lookup_object("mcu " + mcu)
+        else:
+            self._mcu = MCU(config, SecondarySync(self.reactor, mainsync))
+            self.printer.add_object("mcu " + self.name, self._mcu)
         self.cmd_queue = self._mcu.alloc_command_queue()
         self.mcu_probe = IDMEndstopWrapper(self)
 
@@ -823,7 +830,7 @@ class IDMProbe:
             "time": sample["time"],
             "value": last_value,
             "temp": temp,
-            "dist": None if np.isinf(dist) or np.isnan(dist) else dist,
+            "dist": None if dist is None or np.isinf(dist) or np.isnan(dist) else dist,
         }
         if dist is None:
             gcmd.respond_info("Last reading: %.2fHz, %.2fC, no model" %
