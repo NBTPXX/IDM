@@ -24,5 +24,4 @@ ln -s "${BKDIR}/idm.py" "${KDIR}/klippy/extras/idm.py"
 if ! grep -q "klippy/extras/idm.py" "${KDIR}/.git/info/exclude"; then
     echo "klippy/extras/idm.py" >> "${KDIR}/.git/info/exclude"
 fi
-fi
 echo "idm: installation successful."
