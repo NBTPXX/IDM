@@ -1,4 +1,3 @@
-# 打开文件
 from scipy.optimize import curve_fit
 import numpy as np
 import matplotlib.pyplot as plt
@@ -24,9 +23,6 @@ class TempModel:
         param_a=param_linear(ax,self.a_a,self.a_b)
         param_b=param_linear(ax,self.b_a,self.b_b)
         return param_a*(temp_target+param_b/2/param_a)**2+ax+model.fmin
-        #print(-param_linear(ax,self.b_a,self.b_b)/2/param_linear(ax,self.a_a,self.a_b))
-        #param_c=freq-param_linear(freq-model.fmin,self.a_a,self.a_b)*temp_source**2-param_linear(freq-model.fmin,self.b_a,self.b_b)*temp_source
-        #return param_linear(freq-model.fmin,self.a_a,self.a_b)*temp_target**2+param_linear(freq-model.fmin,self.b_a,self.b_b)*temp_target+param_c
 def line_fit(x,a,b,c):
     return a*x**2+b*x+c
 def line0(x,a,c):
@@ -61,9 +57,7 @@ def data_process(path):
     freq=[]
     temp=[]
     with open(path, 'r') as file:
-        # 逐行读取文件内容
         lines = file.readlines()
-        # 遍历每行内容
         for line in lines:
             data=line.split(',')
             try:
@@ -75,7 +69,6 @@ def data_process(path):
         freq=np.array(freq[::dv])
         temp=np.array(temp[::dv])
     plt.plot(temp[20:],freq[20:])
-    #linear_params=area_find(temp[20:],freq[20:])
     param_bounds=([0,-np.inf,-np.inf],[np.inf,np.inf,np.inf])
     linear_params, params_covariance = curve_fit(line_fit, temp[20:],freq[20:],bounds=param_bounds,maxfev=100000,ftol=1e-10,xtol=1e-10)
 
@@ -100,12 +93,11 @@ def param_linear(x,a,b):
 
 while(1):
     plt.figure(figsize=(25, 15))
-    paths=['./data1','./data2','./data3','./data4']
+    paths=['./data1','./data2','./data3']
     a=[]
     b=[]
     freqs=[]
-    num=241
-    #threshold=int(input('threshold set(recommend start from 1000):\n请输入阈值设置(默认推荐1000):\n'))
+    num=231
     try:
         for path in paths:
             plt.subplot(num)
@@ -115,9 +107,8 @@ while(1):
             b.append(temp[1])
             freqs.append(temp[2])
     except:
-        print("please make sure you have move the 4 data file to IDM folder\n请确认你有把4个文件拷到IDM文件夹内")
+        print("please make sure you have move the 3 data file to cartographer-klipper folder\n if the files have been moved, are you running this from the cartographer-klipper folder?")
         break
-    #反向求值
     model=TempModel(None,None,None,None,2943053.8415908813,23.33)
     linear_params, params_covariance = curve_fit(param_linear, np.array(freqs)-model.fmin,a,maxfev=100000,ftol=1e-10,xtol=1e-10)
     model.a_a=linear_params[0]
@@ -131,9 +122,7 @@ while(1):
         freq=[]
         temp=[]
         with open(path, 'r') as file:
-            # 逐行读取文件内容
             lines = file.readlines()
-            # 遍历每行内容
             for line in lines:
                 data=line.split(',')
                 try:
