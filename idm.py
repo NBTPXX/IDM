@@ -1,4 +1,3 @@
-#
 # Copyright (C) 2020-2023 Matt Baker <baker.matt.j@gmail.com>
 # Copyright (C) 2020-2023 Lasse Dalegaard <dalegaard@gmail.com>
 # Copyright (C) 2023 Beacon <beacon3d.com>
@@ -43,7 +42,13 @@ class IDMProbe:
 
         self.x_offset = config.getfloat("x_offset", 0.0)
         self.y_offset = config.getfloat("y_offset", 0.0)
+        self.z_offset = config.getfloat("z_offset", 0.0)
         self.probe_calibrate_z = 0.
+
+        self.probe_speed = config.getfloat("probe_speed", 5.0)
+        self.tap_location = config.get("tap_location","125,125").split(",")
+        self.calibration_method = config.get("calibration_method","scan")
+        self.trigger_method = 0
 
         self.trigger_distance = config.getfloat("trigger_distance", 2.0)
         self.trigger_dive_threshold = config.getfloat("trigger_dive_threshold", 1.0)
@@ -108,6 +113,16 @@ class IDMProbe:
         self.cmd_queue = self._mcu.alloc_command_queue()
         self.mcu_probe = IDMEndstopWrapper(self)
 
+        ppins = self.printer.lookup_object('pins')
+        probe_pin = config.get('probe_pin',"none")
+        if probe_pin != "none":
+            pin_params = ppins.lookup_pin(probe_pin, can_invert=True, can_pullup=True)
+            endstop_mcu = pin_params['chip']
+            self.endstop_mcu_endstop = endstop_mcu.setup_pin('endstop', pin_params)
+            self.endstop_add_stepper = self.endstop_mcu_endstop.add_stepper
+        else:
+            self.endstop_mcu_endstop = None
+            self.endstop_add_stepper  = None
         # Register z_virtual_endstop
         self.printer.lookup_object("pins").register_chip("probe", self)
         # Register event handlers
@@ -142,6 +157,8 @@ class IDMProbe:
                                     desc=self.cmd_PROBE_ACCURACY_help)
         self.gcode.register_command('PROBE_CALIBRATE', self.cmd_PROBE_CALIBRATE,
                                     desc=self.cmd_PROBE_CALIBRATE_help)
+        self.gcode.register_command('PROBE_SWITCH', self.cmd_PROBE_SWITCH,
+                                    desc=self.cmd_PROBE_SWITCH_help)
         self.gcode.register_command("Z_OFFSET_APPLY_PROBE",
                                     self.cmd_Z_OFFSET_APPLY_PROBE,
                                     desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
@@ -152,26 +169,103 @@ class IDMProbe:
         self.printer.lookup_object('toolhead').manual_move(coord, speed)
     cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
 
+    def tap_probe(self, speed):
+        toolhead = self.printer.lookup_object('toolhead')
+        curtime = self.printer.get_reactor().monotonic()
+        status = self.toolhead.get_kinematics().get_status(curtime)
+        if 'z' not in toolhead.get_status(curtime)['homed_axes']:
+            raise self.printer.command_error("Must home before probe")
+        pos = toolhead.get_position()
+        pos[2] = status["axis_minimum"][2]
+        try:
+            epos = self.phoming.probing_move(self.mcu_probe, pos, speed)
+        except self.printer.command_error as e:
+            reason = str(e)
+            if "Timeout during endstop homing" in reason:
+                reason += HINT_TIMEOUT
+            raise self.printer.command_error(reason)
+        self.gcode.respond_info("probe at %.3f,%.3f is z=%.6f"
+                                % (epos[0], epos[1], epos[2] + self.z_offset))
+        return epos[:3]
+    def _calc_median(self, positions):
+        z_sorted = sorted(positions, key=(lambda p: p[2]))
+        middle = len(positions) // 2
+        if (len(positions) & 1) == 1:
+            # odd number of samples
+            return z_sorted[middle]
+        # even number of samples
+        return self._calc_mean(z_sorted[middle-1:middle+1])
+    def _calc_mean(self, positions):
+        count = float(len(positions))
+        return [sum([pos[i] for pos in positions]) / count
+                for i in range(3)]
+    def run_tap_probe(self, gcmd):
+        speed = gcmd.get_float("PROBE_SPEED", self.probe_speed, above=0.)
+        lift_speed = self.get_lift_speed(gcmd)
+        sample_count = gcmd.get_int("SAMPLES", 4, minval=1)
+        sample_retract_dist = gcmd.get_float("SAMPLE_RETRACT_DIST",
+                                             5, above=0.)
+        samples_tolerance = gcmd.get_float("SAMPLES_TOLERANCE",
+                                           1, minval=0.)
+        samples_retries = gcmd.get_int("SAMPLES_TOLERANCE_RETRIES",
+                                       4, minval=0)
+        samples_result = gcmd.get("SAMPLES_RESULT", "median")
+        probexy = self.printer.lookup_object('toolhead').get_position()[:2]
+        retries = 0
+        positions = []
+        while len(positions) < sample_count:
+            # Probe position
+            pos = self.tap_probe(speed)
+            positions.append(pos)
+            # Check samples tolerance
+            z_positions = [p[2] for p in positions]
+            if max(z_positions) - min(z_positions) > samples_tolerance:
+                if retries >= samples_retries:
+                    raise gcmd.error("Probe samples exceed samples_tolerance")
+                gcmd.respond_info("Probe samples exceed tolerance. Retrying...")
+                retries += 1
+                positions = []
+            # Retract
+            if len(positions) < sample_count:
+                self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
+        # Calculate and return result
+        if samples_result == 'median':
+            return self._calc_median(positions)
+        return self._calc_mean(positions)
+
     def probe_calibrate_finalize(self, kin_pos):
         if kin_pos is None:
             return
-        z_offset = self.probe_calibrate_z - kin_pos[2]
-        self.gcode.respond_info(
-            "%s: z_offset: %.3f\n"
-            "The SAVE_CONFIG command will update the printer config file\n"
-            "with the above and restart the printer." % (self.name, z_offset))
+        z_offset = kin_pos[2] - self.probe_calibrate_z
+        self.gcode.run_script_from_command("SET_GCODE_OFFSET Z_ADJUST=%s" % (z_offset))
+        gcode_move = self.printer.lookup_object("gcode_move")
+        offset = gcode_move.get_status()["homing_origin"].z
         configfile = self.printer.lookup_object('configfile')
         configfile.set("idm model " + self.model.name, 'model_offset', "%.3f" % (z_offset,))
 
     def cmd_PROBE_CALIBRATE(self, gcmd):
+        if gcmd.get("METHOD","MANUAL").lower() == "auto":
+            if self.calibration_method == "voron_tap":
+                self.trigger_method = 2
+            else:
+                return
+            #self.gcode.run_script_from_command("G28 Z")
+            self._move([float(self.tap_location[0]), float(self.tap_location[1]), None], self.speed)
+            curpos = self.run_tap_probe(gcmd)
+            gcode_move = self.printer.lookup_object("gcode_move")
+            offset = gcode_move.get_status()["homing_origin"].z
+            self.probe_calibrate_z = offset - curpos[2]
+            self.probe_calibrate_finalize([0,0,self.z_offset])
+            self.trigger_method = 0
+            curpos[2] = 5
+            self._move(curpos, self.lift_speed)
+            return
+        self.trigger_method = 0
         manual_probe.verify_no_manual_probe(self.printer)
-        # Perform initial probe
         lift_speed = self.get_lift_speed(gcmd)
+        # Perform initial probe
         curpos = self.run_probe(gcmd)
-        # Move away from the bed
-        self.probe_calibrate_z = curpos[2]
-        curpos[2] += 5.
-        self._move(curpos, lift_speed)
+        self.probe_calibrate_z = curpos[2] - self.trigger_distance
         # Move the nozzle over the probe point
         curpos[0] += self.x_offset
         curpos[1] += self.y_offset
@@ -310,6 +404,8 @@ class IDMProbe:
             raise self.printer.command_error(reason)
 
     def _probe(self, speed, num_samples=10, allow_faulty=False):
+        if self.trigger_method != 0:
+            return self.tap_probe(speed)
         target = self.trigger_distance
         tdt = self.trigger_dive_threshold
         (dist, samples) = self._sample(5, num_samples)
@@ -345,9 +441,34 @@ class IDMProbe:
     # Calibration routines
 
     def _start_calibration(self, gcmd):
-
+        if self.calibration_method == "voron_tap":
+            self.trigger_method = 2
         allow_faulty = gcmd.get_int("ALLOW_FAULTY_COORDINATE", 0) != 0
-        if gcmd.get("SKIP_MANUAL_PROBE", None) is not None:
+        if self.trigger_method != 0:
+            self._move([float(self.tap_location[0]), float(self.tap_location[1]), None], self.speed)
+            pos = self.toolhead.get_position()
+            curtime = self.printer.get_reactor().monotonic()
+            status = self.toolhead.get_kinematics().get_status(curtime)
+            pos[2] = status["axis_maximum"][2]
+            self.toolhead.set_position(pos, homing_axes=(0, 1, 2))
+            self.tap_probe(self.probe_speed)
+            pos[2] = - self.z_offset
+            self.toolhead.set_position(pos)
+            self._move([None, None, 0], self.lift_speed)
+            kin = self.toolhead.get_kinematics()
+            kin_spos = {s.get_name(): s.get_commanded_position()
+                        for s in kin.get_steppers()}
+            kin_pos = kin.calc_position(kin_spos)
+            if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
+                msg = "Calibrating within a faulty area"
+                if not allow_faulty:
+                    raise gcmd.error(msg)
+                else:
+                    gcmd.respond_raw("!! " + msg + "\n")
+            self._calibrate(gcmd, kin_pos, False)
+            self.trigger_method = 0
+
+        elif gcmd.get("SKIP_MANUAL_PROBE", None) is not None:
             kin = self.toolhead.get_kinematics()
             kin_spos = {s.get_name(): s.get_commanded_position()
                         for s in kin.get_steppers()}
@@ -388,6 +509,7 @@ class IDMProbe:
 
             cb = lambda kin_pos: self._calibrate(gcmd, kin_pos, forced_z)
             manual_probe.ManualProbeHelper(self.printer, gcmd, cb)
+
     def _calibrate(self, gcmd, kin_pos, forced_z):
         if kin_pos is None:
             if forced_z:
@@ -471,7 +593,7 @@ class IDMProbe:
                           "%.3f to %.3f, speed %.2f mm/s, temp %.2fC"
                           % (pos[0], pos[1],
                           cal_min_z, cal_max_z, cal_speed, temp_median))
-
+        self.trigger_method = 0
     # Internal
 
     def _update_thresholds(self, moving_up=False):
@@ -757,6 +879,15 @@ class IDMProbe:
         self._api_dump_helper.add_client(web_request)
 
     # GCode command handlers
+    cmd_PROBE_SWITCH_help = "swith between scan and tap"
+    def cmd_PROBE_SWITCH(self, gcmd):
+        method=gcmd.get("METHOD","NONE").lower()
+        if method == "scan":
+            self.trigger_method=0
+            gcmd.respond_info("Method switched to SCAN")
+        elif method == "voron_tap":
+            self.trigger_method=2
+            gcmd.respond_info("Method switched to VORON TAP")
 
     cmd_PROBE_help = "Probe Z-height at current XY position"
     def cmd_PROBE(self, gcmd):
@@ -879,7 +1010,8 @@ class IDMProbe:
         speed = gcmd.get_float("PROBE_SPEED", self.speed, above=0.0)
         lift_speed = self.get_lift_speed(gcmd)
         sample_count = gcmd.get_int("SAMPLES", 10, minval=1)
-        sample_retract_dist = gcmd.get_float("SAMPLE_RETRACT_DIST", 0)
+        retract_dist = 0 if self.trigger_method == 0 else 5
+        sample_retract_dist = gcmd.get_float("SAMPLE_RETRACT_DIST", retract_dist)
         allow_faulty = gcmd.get_int("ALLOW_FAULTY_COORDINATE", 0) != 0
         pos = self.toolhead.get_position()
         gcmd.respond_info("PROBE_ACCURACY at X:%.3f Y:%.3f Z:%.3f"
@@ -891,16 +1023,21 @@ class IDMProbe:
 
         start_height = self.trigger_distance + sample_retract_dist
         liftpos = [None, None, start_height]
-        self.toolhead.manual_move(liftpos, lift_speed)
-
-        self.multi_probe_begin()
-        positions = []
-        while len(positions) < sample_count:
-            pos = self._probe(speed, allow_faulty=allow_faulty)
-            positions.append(pos)
+        if self.trigger_method == 0:
             self.toolhead.manual_move(liftpos, lift_speed)
-        self.multi_probe_end()
-
+            self.multi_probe_begin()
+            positions = []
+            while len(positions) < sample_count:
+                pos = self._probe(speed, allow_faulty=allow_faulty)
+                positions.append(pos)
+                self.toolhead.manual_move(liftpos, lift_speed)
+            self.multi_probe_end()
+        else:
+            positions = []
+            while len(positions) < sample_count:
+                pos = self.tap_probe(speed)
+                self.toolhead.manual_move(liftpos, lift_speed)
+                positions.append(pos)
         zs = [p[2] for p in positions]
         max_value = max(zs)
         min_value = min(zs)
@@ -1342,6 +1479,8 @@ class IDMEndstopWrapper:
                                        self._handle_home_rails_begin)
         printer.register_event_handler("homing:home_rails_end",
                                        self._handle_home_rails_end)
+        printer.register_event_handler("homing:homing_move_begin",
+                                       self._handle_homing_move_begin)
 
         self.z_homed = False
         self.is_homing = False
@@ -1352,12 +1491,14 @@ class IDMEndstopWrapper:
         for stepper in kin.get_steppers():
             if stepper.is_active_axis("z"):
                 self.add_stepper(stepper)
+                if self.idm.endstop_add_stepper is not None:
+                    self.idm.endstop_add_stepper(stepper)
 
     def _handle_home_rails_begin(self, homing_state, rails):
         self.is_homing = False
 
     def _handle_home_rails_end(self, homing_state, rails):
-        if self.idm.model is None:
+        if self.idm.model is None and self.idm.trigger_method == 0:
             return
 
         if not self.is_homing:
@@ -1368,12 +1509,19 @@ class IDMEndstopWrapper:
 
         # After homing Z we perform a measurement and adjust the toolhead
         # kinematic position.
+        if(self.idm.trigger_method != 0):
+            homing_state.set_homed_position([None, None, -self.idm.z_offset])
+            return
         (dist, samples) = self.idm._sample(self.idm.z_settling_time, 10)
         if math.isinf(dist):
             logging.error("Post-homing adjustment measured samples %s", samples)
             raise self.idm.printer.command_error(
                     "Toolhead stopped below model range")
         homing_state.set_homed_position([None, None, dist])
+
+    def _handle_homing_move_begin(self, hmove):
+        if self.idm.mcu_probe in hmove.get_mcu_endstops():
+            etrsync = self._trsyncs[0]
 
     def get_mcu(self):
         return self._mcu
@@ -1402,12 +1550,16 @@ class IDMEndstopWrapper:
 
     def home_start(self, print_time, sample_time, sample_count, rest_time,
                    triggered=True):
-        if self.idm.model is None:
+        if self.idm.trigger_method == 2:
+            self.is_homing = True
+            return self.idm.endstop_mcu_endstop.home_start(print_time, sample_time, sample_count, rest_time, triggered)
+        if self.idm.model is None and self.idm.trigger_method == 0:
             raise self.idm.printer.command_error("No IDM model loaded")
 
         self.is_homing = True
-        self.idm._apply_threshold()
-        self.idm._sample_async()
+        if self.idm.trigger_method == 0:
+            self.idm._apply_threshold()
+            self.idm._sample_async()
         clock = self._mcu.print_time_to_clock(print_time)
         rest_ticks = self._mcu.print_time_to_clock(print_time+rest_time) - clock
         self._rest_ticks = rest_ticks
@@ -1427,6 +1579,10 @@ class IDMEndstopWrapper:
         etrsync = self._trsyncs[0]
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
+        
+        if self.idm.trigger_method != 0:
+            return self._trigger_completion
+
         self.idm.idm_home_cmd.send([
             etrsync.get_oid(),
             etrsync.REASON_ENDSTOP_HIT,
@@ -1435,6 +1591,8 @@ class IDMEndstopWrapper:
         return self._trigger_completion
 
     def home_wait(self, home_end_time):
+        if self.idm.trigger_method == 2:
+            return self.idm.endstop_mcu_endstop.home_wait(home_end_time)
         etrsync = self._trsyncs[0]
         etrsync.set_home_end_time(home_end_time)
         if self._mcu.is_fileoutput():
