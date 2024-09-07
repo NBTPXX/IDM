@@ -444,7 +444,7 @@ class IDMProbe:
         if self.calibration_method == "voron_tap":
             self.trigger_method = 2
         allow_faulty = gcmd.get_int("ALLOW_FAULTY_COORDINATE", 0) != 0
-        if self.trigger_method != 0:
+        if self.trigger_method != 0 and gcmd.get("SKIP_MANUAL_PROBE", None) is None:
             self._move([float(self.tap_location[0]), float(self.tap_location[1]), None], self.speed)
             pos = self.toolhead.get_position()
             curtime = self.printer.get_reactor().monotonic()
@@ -455,17 +455,14 @@ class IDMProbe:
             pos[2] = - self.z_offset
             self.toolhead.set_position(pos)
             self._move([None, None, 0], self.lift_speed)
-            kin = self.toolhead.get_kinematics()
-            kin_spos = {s.get_name(): s.get_commanded_position()
-                        for s in kin.get_steppers()}
-            kin_pos = kin.calc_position(kin_spos)
-            if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
+            pos[2] = 0
+            if self._is_faulty_coordinate(pos[0], pos[1]):
                 msg = "Calibrating within a faulty area"
                 if not allow_faulty:
                     raise gcmd.error(msg)
                 else:
                     gcmd.respond_raw("!! " + msg + "\n")
-            self._calibrate(gcmd, kin_pos, False)
+            self._calibrate(gcmd, pos, False)
             self.trigger_method = 0
 
         elif gcmd.get("SKIP_MANUAL_PROBE", None) is not None:
