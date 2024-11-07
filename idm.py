@@ -77,6 +77,7 @@ class IDMProbe:
         self.measured_max = 0.0
 
         self.last_sample = None
+        self.last_received_sample = None
         self.hardware_failure = None
 
         self.mesh_helper = IDMMeshHelper.create(self, config)
