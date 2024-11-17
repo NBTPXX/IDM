@@ -350,7 +350,7 @@ class Scanner:
             self.trigger_method = 3
         else:
             self.trigger_method = 0
-            raise gcmd.error("Must use touch or adxl mode. Check your config before trying again.")
+            raise gcmd.error("Must use touch/adxl/second_probe mode. Check your config before trying again.")
 
         self.check_temp(gcmd)
         self.log_debug_info(verbose, gcmd, f"Trigger Method: {self.trigger_method}")
