@@ -239,11 +239,11 @@ class Scanner:
             pin_params = ppins.lookup_pin(probe_pin, can_invert=True, can_pullup=True)
 
             adxl_mcu = pin_params['chip']
-            self.adxl_mcu_endstop = adxl_mcu.setup_pin('endstop', pin_params)
-            self.adxl_add_stepper = self.adxl_mcu_endstop.add_stepper
+            self.endstop_mcu_endstop = adxl_mcu.setup_pin('endstop', pin_params)
+            self.endstop_add_stepper = self.endstop_mcu_endstop.add_stepper
         else:
-            self.adxl_mcu_endstop = None
-            self.adxl_add_stepper = None
+            self.endstop_mcu_endstop = None
+            self.endstop_add_stepper = None
         # Register z_virtual_endstop
         self.printer.lookup_object("pins").register_chip("probe", self)
         # Register event handlers
@@ -346,6 +346,8 @@ class Scanner:
             if self.adxl345 is None:
                 self.adxl345 = self.printer.lookup_object('adxl345')
             self.init_adxl()
+        elif self.calibration_method == "second_probe":
+            self.trigger_method = 3
         else:
             self.trigger_method = 0
             raise gcmd.error("Must use touch or adxl mode. Check your config before trying again.")
@@ -648,6 +650,8 @@ class Scanner:
                 self.trigger_method = 2
                 self.adxl345 = self.printer.lookup_object('adxl345')
                 self.init_adxl()
+            elif self.calibration_method == "second_probe":
+                self.trigger_method = 3
             else:
                 return
             #self.gcode.run_script_from_command("G28 Z")
@@ -908,6 +912,8 @@ class Scanner:
             if self.adxl345 is None:
                 self.adxl345 = self.printer.lookup_object('adxl345')
             self.init_adxl()
+        elif self.calibration_method == "second_probe":
+            self.trigger_method = 3
         allow_faulty = gcmd.get_int("ALLOW_FAULTY_COORDINATE", 0) != 0
         if self.trigger_method != 0 and gcmd.get("METHOD", 'manual').lower() != "manual": 
             self._move([touch_location_x, touch_location_y, None], 40)
@@ -1472,10 +1478,15 @@ class Scanner:
             self.trigger_method=1
             gcmd.respond_info("Method switched to TOUCH")
         elif method == "adxl":
+            self.calibration_method = "adxl"
             self.adxl345 = self.printer.lookup_object('adxl345')
             self.trigger_method=2
             self.init_adxl()
             gcmd.respond_info("Method switched to ADXL")
+        elif method == "second_probe":
+            self.calibration_method = "second_probe"
+            self.trigger_method=3
+            gcmd.respond_info("Method switched to second probe")
         threshold = gcmd.get_int("THRESHOLD", self.detect_threshold_z)
         if self.detect_threshold_z != threshold:
             self.detect_threshold_z = threshold
@@ -2359,8 +2370,8 @@ class ScannerEndstopWrapper:
         for stepper in kin.get_steppers():
             if stepper.is_active_axis("z"):
                 self.add_stepper(stepper)
-                if self.scanner.adxl_add_stepper is not None:
-                    self.scanner.adxl_add_stepper(stepper)
+                if self.scanner.endstop_add_stepper is not None:
+                    self.scanner.endstop_add_stepper(stepper)
 
     def _handle_home_rails_begin(self, homing_state, rails):
         self.is_homing = False
@@ -2432,9 +2443,9 @@ class ScannerEndstopWrapper:
 
     def home_start(self, print_time, sample_time, sample_count, rest_time,
                    triggered=True):
-        if self.scanner.trigger_method == 2:
+        if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
             self.is_homing = True
-            return self.scanner.adxl_mcu_endstop.home_start(print_time, sample_time, sample_count, rest_time, triggered)
+            return self.scanner.endstop_mcu_endstop.home_start(print_time, sample_time, sample_count, rest_time, triggered)
         if self.scanner.model is None and self.scanner.trigger_method == 0:
             raise self.scanner.printer.command_error("No Scanner model loaded")
 
@@ -2475,8 +2486,8 @@ class ScannerEndstopWrapper:
         return self._trigger_completion
 
     def home_wait(self, home_end_time):
-        if self.scanner.trigger_method == 2:
-            return self.scanner.adxl_mcu_endstop.home_wait(home_end_time)
+        if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
+            return self.scanner.endstop_mcu_endstop.home_wait(home_end_time)
         etrsync = self._trsyncs[0]
         etrsync.set_home_end_time(home_end_time)
         if self._mcu.is_fileoutput():
