@@ -662,6 +662,8 @@ class Scanner:
             offset = gcode_move.get_status()["homing_origin"].z
             self.probe_calibrate_z = offset - curpos[2]
             self.probe_calibrate_finalize([0,0,self.offset['z']])
+            self.set_temp(gcmd)
+            self.extruder_target = 0
             self.trigger_method = 0
             self._zhop()
             return
