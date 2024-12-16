@@ -618,7 +618,7 @@ class Scanner:
                     retries += 1
                     positions = []
                 # Retract
-                if len(positions) < sample_count:
+                if len(positions) <= sample_count:
                     self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
                     self.toolhead.dwell(1.0)
         finally:
