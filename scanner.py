@@ -693,7 +693,7 @@ class Scanner:
             move = [None, None, self.z_hop_dist]
             if "z" not in kin_status["homed_axes"]:
                 pos[2] = 0
-                self.toolhead.set_position(pos, homing_axes=[2])
+                self.toolhead.set_position(pos, homing_axes=[2, "z"])
                 self.toolhead.manual_move(move, self.z_hop_speed)
                 self.toolhead.wait_moves()
                 if hasattr(kin, "note_z_not_homed"):
@@ -924,7 +924,7 @@ class Scanner:
             curtime = self.printer.get_reactor().monotonic()
             status = self.toolhead.get_kinematics().get_status(curtime)
             pos[2] = status["axis_maximum"][2]
-            self.toolhead.set_position(pos, homing_axes=(0, 1, 2))
+            self.toolhead.set_position(pos, homing_axes=(0, 1, 2, "x", "y", "z"))
             self.touch_probe(self.probe_speed)
             pos[2] = - self.offset['z']
             self.toolhead.set_position(pos)
@@ -979,7 +979,7 @@ class Scanner:
                     - 2.0
                     - gcmd.get_float("CEIL", self.cal_config['ceil'])
                 )
-                self.toolhead.set_position(pos, homing_axes=[2])
+                self.toolhead.set_position(pos, homing_axes=[2, "z"])
                 forced_z = True
             self._move([touch_location_x, touch_location_y, None], 40)
             self.toolhead.wait_moves()

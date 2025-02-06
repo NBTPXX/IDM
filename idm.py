@@ -451,7 +451,7 @@ class IDMProbe:
             curtime = self.printer.get_reactor().monotonic()
             status = self.toolhead.get_kinematics().get_status(curtime)
             pos[2] = status["axis_maximum"][2]
-            self.toolhead.set_position(pos, homing_axes=(0, 1, 2))
+            self.toolhead.set_position(pos, homing_axes=(0, 1, 2, "x", "y", "z"))
             self.tap_probe(self.probe_speed)
             pos[2] = - self.z_offset
             self.toolhead.set_position(pos)
@@ -502,7 +502,7 @@ class IDMProbe:
                     - 2.0
                     - gcmd.get_float("CEIL", self.cal_ceil)
                 )
-                self.toolhead.set_position(pos, homing_axes=[2])
+                self.toolhead.set_position(pos, homing_axes=[2, "z"])
                 forced_z = True
 
             cb = lambda kin_pos: self._calibrate(gcmd, kin_pos, forced_z)
