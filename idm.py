@@ -451,7 +451,13 @@ class IDMProbe:
             curtime = self.printer.get_reactor().monotonic()
             status = self.toolhead.get_kinematics().get_status(curtime)
             pos[2] = status["axis_maximum"][2]
-            self.toolhead.set_position(pos, homing_axes=(0, 1, 2, "x", "y", "z"))
+            try:
+                self.toolhead.set_position(pos, homing_axes=(0, 1, 2, "x", "y", "z"))
+            except:
+                try:
+                    self.toolhead.set_position(pos, homing_axes=("x", "y", "z"))
+                except:
+                    self.toolhead.set_position(pos, homing_axes=(0, 1, 2))
             self.tap_probe(self.probe_speed)
             pos[2] = - self.z_offset
             self.toolhead.set_position(pos)
@@ -502,7 +508,13 @@ class IDMProbe:
                     - 2.0
                     - gcmd.get_float("CEIL", self.cal_ceil)
                 )
-                self.toolhead.set_position(pos, homing_axes=[2, "z"])
+                try:
+                    self.toolhead.set_position(pos, homing_axes=[2, "z"])
+                except:
+                    try:
+                        self.toolhead.set_position(pos, homing_axes=["z"])
+                    except:
+                        self.toolhead.set_position(pos, homing_axes=[2])
                 forced_z = True
 
             cb = lambda kin_pos: self._calibrate(gcmd, kin_pos, forced_z)
@@ -513,7 +525,9 @@ class IDMProbe:
             if forced_z:
                 kin = self.toolhead.get_kinematics()
                 if hasattr(kin, "note_z_not_homed"):
-                        kin.note_z_not_homed()
+                    kin.note_z_not_homed()
+                elif hasattr(kin, "clear_homing_state"):
+                    kin.clear_homing_state("z")
             return
 
         gcmd.respond_info("IDM calibration starting")

@@ -505,6 +505,8 @@ class Scanner:
             self.trigger_method = 0
             if hasattr(kinematics, "note_z_not_homed"):
                 kinematics.note_z_not_homed()
+            elif hasattr(kinematics, "clear_homing_state"):
+                kinematics.clear_homing_state("z")
             raise
 
     def touch_probe(self, speed, skip=0, verbose=True):
@@ -693,11 +695,19 @@ class Scanner:
             move = [None, None, self.z_hop_dist]
             if "z" not in kin_status["homed_axes"]:
                 pos[2] = 0
-                self.toolhead.set_position(pos, homing_axes=[2, "z"])
+                try:
+                    self.toolhead.set_position(pos, homing_axes=[2, "z"])
+                except:
+                    try:
+                        self.toolhead.set_position(pos, homing_axes=["z"])
+                    except:
+                        self.toolhead.set_position(pos, homing_axes=[2])
                 self.toolhead.manual_move(move, self.z_hop_speed)
                 self.toolhead.wait_moves()
                 if hasattr(kin, "note_z_not_homed"):
                     kin.note_z_not_homed()
+                elif hasattr(kin, "clear_homing_state"):
+                    kin.clear_homing_state("z")
             elif pos[2] < self.z_hop_dist:
                 self.toolhead.manual_move(move, self.z_hop_speed)
                 self.toolhead.wait_moves()
@@ -924,7 +934,13 @@ class Scanner:
             curtime = self.printer.get_reactor().monotonic()
             status = self.toolhead.get_kinematics().get_status(curtime)
             pos[2] = status["axis_maximum"][2]
-            self.toolhead.set_position(pos, homing_axes=(0, 1, 2, "x", "y", "z"))
+            try:
+                self.toolhead.set_position(pos, homing_axes=(0, 1, 2, "x", "y", "z"))
+            except:
+                try:
+                    self.toolhead.set_position(pos, homing_axes=("x", "y", "z"))
+                except:
+                    self.toolhead.set_position(pos, homing_axes=(0, 1, 2))
             self.touch_probe(self.probe_speed)
             pos[2] = - self.offset['z']
             self.toolhead.set_position(pos)
@@ -979,7 +995,13 @@ class Scanner:
                     - 2.0
                     - gcmd.get_float("CEIL", self.cal_config['ceil'])
                 )
-                self.toolhead.set_position(pos, homing_axes=[2, "z"])
+                try:
+                    self.toolhead.set_position(pos, homing_axes=[2, "z"])
+                except:
+                    try:
+                        self.toolhead.set_position(pos, homing_axes=["z"])
+                    except:
+                        self.toolhead.set_position(pos, homing_axes=[2])
                 forced_z = True
             self._move([touch_location_x, touch_location_y, None], 40)
             self.toolhead.wait_moves()
@@ -992,7 +1014,9 @@ class Scanner:
             if forced_z:
                 kin = self.toolhead.get_kinematics()
                 if hasattr(kin, "note_z_not_homed"):
-                        kin.note_z_not_homed()
+                    kin.note_z_not_homed()
+                elif hasattr(kin, "clear_homing_state"):
+                    kin.clear_homing_state("z")
             return
 
         gcmd.respond_info("Scanner calibration starting")
@@ -1085,7 +1109,9 @@ class Scanner:
             if forced_z:
                 kin = self.toolhead.get_kinematics()
                 if hasattr(kin, "note_z_not_homed"):
-                        kin.note_z_not_homed()
+                    kin.note_z_not_homed()
+                elif hasattr(kin, "clear_homing_state"):
+                    kin.clear_homing_state("z")
 
             return
 
