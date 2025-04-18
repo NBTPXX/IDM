@@ -298,10 +298,9 @@ class Scanner:
 
     cmd_SCANNER_CALIBRATE_help = "Calibrate scanner response curve"
     def cmd_SCANNER_CALIBRATE(self,gcmd):
-        if self.calibration_method != "scan":
+        if self.calibration_method == "touch":
              raise gcmd.error("You are not in scan mode. Please set 'calibration_method: scan' in your printer.cfg and retry.")
         else:
-            self.calibration_method = "scan"
             self._start_calibration(gcmd)
 
     cmd_SCANNER_TOUCH_help = "Home in TOUCH mode"
@@ -368,7 +367,7 @@ class Scanner:
         self._zhop()
         self._move([touch_location_x, touch_location_y, None], move_speed)
 
-        if gcmd.get("METHOD","None").lower() == "manual":
+        if gcmd.get("METHOD","None").lower() == "manual" or self.calibration_method != "touch":
             self._start_calibration(gcmd)
         else:
             initial_position = self.toolhead.get_position()[:]
