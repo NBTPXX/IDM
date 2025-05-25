@@ -366,7 +366,7 @@ class Scanner:
         self._zhop()
         self._move([touch_location_x, touch_location_y, None], move_speed)
 
-        if gcmd.get("METHOD","None").lower() == "manual" or self.calibration_method != "touch":
+        if gcmd.get("METHOD","None").lower() == "manual":
             self._start_calibration(gcmd)
         else:
             initial_position = self.toolhead.get_position()[:]
