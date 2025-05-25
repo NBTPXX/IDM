@@ -83,7 +83,6 @@ class Scanner:
         else:
             self.thermistor_override = None
 
-
         self.model_temp_warning_disable = config.getint("model_temp_warning_disable", 0)
         self.probe_speed = config.getfloat("probe_speed", self.speed)
 
@@ -577,7 +576,7 @@ class Scanner:
                 self.gcode.run_script_from_command(cmd)
 
     def run_touch_probe(self, gcmd):
-        speed = gcmd.get_float("PROBE_SPEED", self.probe_speed, above=0.)
+        speed = gcmd.get_float("PROBE_SPEED", self.scanner_touch_config['speed'], above=0.)
         lift_speed = self.get_lift_speed(gcmd)
         sample_count = self.get_samples(gcmd)
         sample_retract_dist = self.get_sample_retract_dist(gcmd)
@@ -624,6 +623,7 @@ class Scanner:
                     self.toolhead.dwell(1.0)
         finally:
             self.set_accel(max_accel)
+            self.trigger_method = 0
         # Calculate and return result
         if samples_result == 'median':
             return self._calc_median(positions)
@@ -1561,7 +1561,7 @@ class Scanner:
                 gcmd.respond_info("Testing Threshold value %d..." % (current_threshold))
                 self.detect_threshold_z = current_threshold
 
-                result = self._probe_accuracy_check(self.probe_speed, skip_samples, qualify_samples, 5, False, lift_speed, False, best_threshold_range)
+                result = self._probe_accuracy_check(self.scanner_touch_config['speed'], skip_samples, qualify_samples, 5, False, lift_speed, False, best_threshold_range)
                 if result.range_value <= range_value and result.range_value < best_threshold_range:
                     gcmd.respond_info("Threshold value %d has promising repeatability over %d samples within  %.6f range (current best %.6f at %d), verifying over %d ..." % (current_threshold, qualify_samples, result.range_value, best_threshold_range, best_threshold, verify_samples))
                     result = self._probe_accuracy_check(self.scanner_touch_config['speed'], skip_samples, verify_samples, 5, False, lift_speed, False, best_threshold_range)
