@@ -1590,6 +1590,8 @@ class Scanner:
             gcmd.respond_info("Best threshold value is %d, quality level is %r, range is %.6f" % (best_threshold, self._get_threshold_quality(best_threshold_range), best_threshold_range))
             if best_threshold_range <= target:
                 gcmd.respond_info("Saved threshold value %d as it is better than target %.3f \nRun SAVE_CONFIG to save this to your printer.cfg and restart" % (best_threshold, target))
+            else:
+                gcmd.respond_info("No suitable threshold was found during the scan.")
         finally:
             self._zhop()
             if best_threshold != original_threshold:
