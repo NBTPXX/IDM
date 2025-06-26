@@ -504,7 +504,10 @@ class Scanner:
             if hasattr(kinematics, "note_z_not_homed"):
                 kinematics.note_z_not_homed()
             elif hasattr(kinematics, "clear_homing_state"):
-                kinematics.clear_homing_state("z")
+                try:
+                    kinematics.clear_homing_state("z")
+                except:
+                    kinematics.clear_homing_state([2])    
             raise
 
     def touch_probe(self, speed, skip=0, verbose=True):
