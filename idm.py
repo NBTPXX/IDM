@@ -527,7 +527,10 @@ class IDMProbe:
                 if hasattr(kin, "note_z_not_homed"):
                     kin.note_z_not_homed()
                 elif hasattr(kin, "clear_homing_state"):
-                    kin.clear_homing_state("z")
+                    try:
+                        kin.clear_homing_state("z")
+                    except:
+                        kin.clear_homing_state([2])
             return
 
         gcmd.respond_info("IDM calibration starting")
