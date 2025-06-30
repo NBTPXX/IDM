@@ -816,7 +816,7 @@ class Scanner:
 
     def get_sample_retract_dist(self, gcmd=None):
         if gcmd is not None:
-            return gcmd.get_float("SAMPLE_RETRACT_DIST", self.samples_config['retract_dist'], above=0.)
+            return gcmd.get_float("SAMPLE_RETRACT_DIST", self.samples_config['retract_dist'], minval=0.)
         return self.samples_config['retract_dist']
 
     def get_samples_tolerance(self, gcmd=None):
