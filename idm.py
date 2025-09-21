@@ -667,7 +667,7 @@ class IDMProbe:
 
     def _enrich_sample(self, sample):
         sample["dist"] = self.freq_to_dist(sample["freq"], sample["temp"])
-        pos, vel = self._get_trapq_position(sample["time"])
+        pos = self._get_position_by_time(sample["time"])
         
         if pos is None:
             return
@@ -795,19 +795,17 @@ class IDMProbe:
         self._stream_buffer.append(params.copy())
         self._stream_flush_schedule()
 
-    def _get_trapq_position(self, print_time):
-        ffi_main, ffi_lib = chelper.get_ffi()
-        data = ffi_main.new("struct pull_move[1]")
-        count = ffi_lib.trapq_extract_old(self.trapq, data, 1, 0.0, print_time)
-        if not count:
-            return None, None
-        move = data[0]
-        move_time = max(0.0, min(move.move_t, print_time - move.print_time))
-        dist = (move.start_v + .5 * move.accel * move_time) * move_time
-        pos = (move.start_x + move.x_r * dist, move.start_y + move.y_r * dist,
-               move.start_z + move.z_r * dist)
-        velocity = move.start_v + move.accel * move_time
-        return pos, velocity
+    def _get_position_by_time(self, print_time):
+        kin = self.toolhead.get_kinematics()
+        pos = {}
+        steppers = kin.get_steppers()
+        for stepper in steppers:
+            name = stepper.get_name()
+            mcu_pos = stepper.get_past_mcu_position(print_time)
+            cmd_pos = stepper.mcu_to_commanded_position(mcu_pos)
+            pos[name] = cmd_pos
+        return kin.calc_position(pos)
+
 
     def _sample_printtime_sync(self, skip=0, count=1):
         move_time = self.toolhead.get_last_move_time()
@@ -999,11 +997,11 @@ class IDMProbe:
             def close_file():
                 f.close()
             completion_cb = close_file
-            f.write("time,data,data_smooth,freq,dist,temp,pos_x,pos_y,pos_z,vel\n")
+            f.write("time,data,data_smooth,freq,dist,temp,pos_x,pos_y,pos_z\n")
 
             def cb(sample):
                 pos = sample.get("pos", None)
-                obj = "%.4f,%d,%.2f,%.5f,%.5f,%.2f,%s,%s,%s,%s\n" % (
+                obj = "%.4f,%d,%.2f,%.5f,%.5f,%.2f,%s,%s,%s\n" % (
                     sample["time"],
                     sample["data"],
                     sample["data_smooth"],
@@ -1013,7 +1011,6 @@ class IDMProbe:
                     "%.3f" % (pos[0],) if pos is not None else "",
                     "%.3f" % (pos[1],) if pos is not None else "",
                     "%.3f" % (pos[2],) if pos is not None else "",
-                    "%.3f" % (sample["vel"],) if "vel" in sample else ""
                 )
                 f.write(obj)
 
@@ -1400,7 +1397,7 @@ class APIDumpHelper:
         self.clients = {}
         self.stream = None
         self.buffer = []
-        self.fields = ["dist", "temp", "pos", "freq", "vel", "time"]
+        self.fields = ["dist", "temp", "pos", "freq", "time"]
 
     def _start_stop(self):
         if not self.stream and self.clients:
