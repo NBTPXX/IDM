@@ -1275,7 +1275,6 @@ class Scanner:
         if sample["dist"] is not None and self.mod_axis_twist_comp:
             sample["dist"] -= self.mod_axis_twist_comp.get_z_compensation_value(pos)
         sample["pos"] = pos
-        sample["vel"] = vel
 
     def _start_streaming(self):
         if self._stream_en == 0:
