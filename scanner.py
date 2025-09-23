@@ -1829,7 +1829,8 @@ class Scanner:
                     sample["temp"],
                     "%.3f" % (pos[0],) if pos is not None else "",
                     "%.3f" % (pos[1],) if pos is not None else "",
-                    "%.3f" % (pos[2],) if pos is not None else "",
+                    "%.3f" % (pos[2],) if pos is not None else ""
+                )
                 f.write(obj)
 
             self._log_stream = self.streaming_session(cb, completion_cb)
