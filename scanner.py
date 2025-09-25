@@ -661,6 +661,7 @@ class Scanner:
             #self.gcode.run_script_from_command("G28 Z")
             self.check_temp(gcmd)
             self._move([touch_location_x, touch_location_y, None], 40)
+            self.toolhead.wait_moves()
             curpos = self.run_touch_probe(gcmd)
             gcode_move = self.printer.lookup_object("gcode_move")
             offset = gcode_move.get_status()["homing_origin"].z
