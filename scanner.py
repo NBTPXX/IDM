@@ -158,7 +158,7 @@ class Scanner:
             'max_retries': config.getfloat("scanner_touch_max_retries", 5, minval=0),
             'move_speed': config.getfloat("scanner_touch_move_speed", 50, minval=1),
             'calibrate': config.getfloat("scanner_touch_calibrate", 0),
-            'z_offset': config.getfloat("scanner_touch_z_offset", 0.05),
+            'z_offset': config.getfloat("scanner_touch_z_offset", config.getfloat("z_offset", 0.05)),
             'threshold': config.getint("scanner_touch_threshold", 2500),
             'max_temp': config.getfloat("scanner_touch_max_temp", 150)
         }
