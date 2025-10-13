@@ -522,6 +522,7 @@ class Scanner:
         pos[2] = status["axis_minimum"][2]
         try:
             epos = self.phoming.probing_move(self.mcu_probe, pos, speed)
+            epos[2] += self.offset['z']
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -667,7 +668,7 @@ class Scanner:
             gcode_move = self.printer.lookup_object("gcode_move")
             offset = gcode_move.get_status()["homing_origin"].z
             self.probe_calibrate_z = offset - curpos[2]
-            self.probe_calibrate_finalize([0,0,self.offset['z']])
+            self.probe_calibrate_finalize([0,0,0])
             self.set_temp(gcmd)
             self.extruder_target = 0
             self.trigger_method = 0
