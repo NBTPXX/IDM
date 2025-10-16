@@ -90,12 +90,12 @@ class Scanner:
         if config.has_section("bed_mesh"):
             mesh_config = config.getsection("bed_mesh")
             if mesh_config.get("zero_reference_position", None) is not None:
-                    if config.get("scanner_touch_location", None) is not None:
-                        manual_location = config.get("scanner_touch_location").split(",")
-                        if manual_location:
-                            self.touch_location = manual_location
-                    else: 
-                        self.touch_location = mesh_config.get('zero_reference_position').split(",")
+                if config.get("scanner_touch_location", None) is not None:
+                    manual_location = config.get("scanner_touch_location").split(",")
+                    if manual_location:
+                        self.touch_location = manual_location
+                else: 
+                    self.touch_location = mesh_config.get('zero_reference_position').split(",")
             else:
                 stepper_x = config.getsection("stepper_x")
                 use_x = stepper_x.getfloat("position_max") / 2
