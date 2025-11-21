@@ -1242,7 +1242,7 @@ class Scanner:
             if sample["data"] == 0xFFFFFFF:
                 msg = "coil is shorted or not connected"
             elif self.fmin is not None and sample["freq"] > 1.35 * self.fmin:
-                msg = "coil expected max frequency exceeded"
+                msg = "coil expected max frequency exceeded(current frequency:%s,max frequency:%s)" % (sample["freq"], 1.35 * self.fmin)
             if msg:
                 msg = "Scanner hardware issue: " + msg
                 self.hardware_failure = msg
