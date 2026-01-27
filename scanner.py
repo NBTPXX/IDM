@@ -805,7 +805,7 @@ class Scanner:
     def multi_probe_end(self):
         self._stop_streaming()
 
-    def get_offsets(self):
+    def get_offsets(self, gcmd=None):
         return self.offset['x'], self.offset['y'], self.trigger_distance
 
     def get_lift_speed(self, gcmd=None):
@@ -2340,8 +2340,8 @@ class ScannerWrapper:
         return self.scanner.multi_probe_begin()
     def multi_probe_end(self):
         return self.scanner.multi_probe_end()
-    def get_offsets(self):
-        return self.scanner.get_offsets()
+    def get_offsets(self, gcmd=None):
+        return self.scanner.get_offsets(gcmd)
     def get_lift_speed(self, gcmd=None):
         return self.scanner.get_lift_speed(gcmd)
     def run_probe(self, gcmd):
