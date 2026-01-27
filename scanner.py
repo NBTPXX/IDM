@@ -734,7 +734,24 @@ class Scanner:
                 def get_z_compensation_value(self, pos):
                     temp = list(pos)
                     self.raw_axis_twist_comp._update_z_compensation_value(temp)
-                    return temp[2]-pos[2]
+                    return temp[2] - pos[2]
+                axis_twist_comp = type("class",(object,),{"get_z_compensation_value" : get_z_compensation_value, "raw_axis_twist_comp" : self.raw_axis_twist_comp})
+                self.mod_axis_twist_comp = axis_twist_comp()
+            if hasattr(manual_probe, "ProbeResult"):
+                self.raw_axis_twist_comp = self.mod_axis_twist_comp
+                def get_z_compensation_value(self, pos):
+                    (x, y, z) = self.get_offsets()
+                    temp = [manual_probe.ProbeResult(
+                        pos[0] + x,
+                        pos[1] + y,
+                        pos[2] - z,
+                        pos[0],
+                        pos[1],
+                        pos[2],
+                    )]
+                    bed_z = temp[0].bed_z
+                    self.raw_axis_twist_comp._update_z_compensation_value(temp)
+                    return temp[0].bed_z - bed_z
                 axis_twist_comp = type("class",(object,),{"get_z_compensation_value" : get_z_compensation_value, "raw_axis_twist_comp" : self.raw_axis_twist_comp})
                 self.mod_axis_twist_comp = axis_twist_comp()
         # Ensure streaming mode is stopped
@@ -854,6 +871,16 @@ class Scanner:
         self._start_streaming()
         try:
             epos = self._probe(speed, skip_samples, allow_faulty=allow_faulty)
+            if hasattr(manual_probe, "ProbeResult"):
+                (x, y, z) = self.get_offsets()
+                epos = manual_probe.ProbeResult(
+                    epos[0] + x,
+                    epos[1] + y,
+                    epos[2] - z,
+                    epos[0],
+                    epos[1],
+                    epos[2],
+                )
             self.results.append(epos)
             return epos
         finally:
@@ -2951,7 +2978,7 @@ class ScannerMeshHelper:
         def cb(sample):
             total_samples[0] += 1
             d = sample["dist"]
-            (x, y, z) = sample["pos"]
+            (x, y, z) = sample["pos"][:3]
             x += xo
             y += yo
 
