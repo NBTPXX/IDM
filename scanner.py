@@ -752,7 +752,7 @@ class Scanner:
                     bed_z = temp[0].bed_z
                     self.raw_axis_twist_comp._update_z_compensation_value(temp)
                     return temp[0].bed_z - bed_z
-                axis_twist_comp = type("class",(object,),{"get_z_compensation_value" : get_z_compensation_value, "raw_axis_twist_comp" : self.raw_axis_twist_comp})
+                axis_twist_comp = type("class",(object,),{"get_z_compensation_value" : get_z_compensation_value, "get_offsets" : self.get_offsets, "raw_axis_twist_comp" : self.raw_axis_twist_comp})
                 self.mod_axis_twist_comp = axis_twist_comp()
         # Ensure streaming mode is stopped
         self.scanner_stream_cmd.send([0])
