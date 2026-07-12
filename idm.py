@@ -79,6 +79,10 @@ class IDMProbe:
         self.last_sample = None
         self.last_received_sample = None
         self.hardware_failure = None
+        self.chip_id = None
+        self.tag_match = None
+        self.idm_get_chipid_cmd = None
+        self.idm_set_chipid_tag_cmd = None
 
         self.mesh_helper = IDMMeshHelper.create(self, config)
 
@@ -133,6 +137,7 @@ class IDMProbe:
                                             self._handle_mcu_identify)
         self._mcu.register_config_callback(self._build_config)
         self._mcu.register_response(self._handle_idm_data, "idm_data")
+        self._mcu.register_response(self._handle_idm_chipid, "idm_chipid")
         # Probe results
         self.results = []
         # Register webhooks
@@ -146,6 +151,11 @@ class IDMProbe:
                                     desc=self.cmd_IDM_STREAM_help)
         self.gcode.register_command("IDM_QUERY", self.cmd_IDM_QUERY,
                                     desc=self.cmd_IDM_QUERY_help)
+        self.gcode.register_command("IDM_GET_CHIPID", self.cmd_IDM_GET_CHIPID,
+                                    desc=self.cmd_IDM_GET_CHIPID_help)
+        self.gcode.register_command("IDM_SET_CHIPID_TAG",
+                                    self.cmd_IDM_SET_CHIPID_TAG,
+                                    desc=self.cmd_IDM_SET_CHIPID_TAG_help)
         self.gcode.register_command("IDM_CALIBRATE",
                                     self.cmd_IDM_CALIBRATE,
                                     desc=self.cmd_IDM_CALIBRATE_help)
@@ -165,6 +175,35 @@ class IDMProbe:
                                     desc=self.cmd_Z_OFFSET_APPLY_PROBE_help)
 
     # Event handlers
+
+    def _handle_idm_chipid(self, params):
+        self.chip_id = params["chip_id"]
+        self.tag_match = bool(params["tag_match"])
+        self.gcode.respond_info("IDM chip_id=%s tag_match=%d"
+                                % (self.chip_id, self.tag_match))
+
+    cmd_IDM_GET_CHIPID_help = "Read the IDM MCU UID and tag status"
+    def cmd_IDM_GET_CHIPID(self, gcmd):
+        if self.idm_get_chipid_cmd is None:
+            raise gcmd.error("The IDM firmware does not support idm_get_chipid")
+        self.idm_get_chipid_cmd.send()
+
+    cmd_IDM_SET_CHIPID_TAG_help = "Write a 64-bit SipHash tag"
+    def cmd_IDM_SET_CHIPID_TAG(self, gcmd):
+        if self.idm_set_chipid_tag_cmd is None:
+            raise gcmd.error(
+                "The IDM firmware does not support idm_set_chipid_tag")
+        tag_text = gcmd.get("TAG").strip().lower()
+        if tag_text.startswith("0x"):
+            tag_text = tag_text[2:]
+        if len(tag_text) != 16:
+            raise gcmd.error("TAG must contain exactly 16 hexadecimal digits")
+        try:
+            tag = int(tag_text, 16)
+        except ValueError:
+            raise gcmd.error("TAG must contain exactly 16 hexadecimal digits")
+        self.idm_set_chipid_tag_cmd.send(
+            [tag & 0xffffffff, (tag >> 32) & 0xffffffff])
 
     def _move(self, coord, speed):
         self.printer.lookup_object('toolhead').manual_move(coord, speed)
@@ -329,6 +368,13 @@ class IDMProbe:
             "idm_base_read len=%c offset=%hu",
             "idm_base_data bytes=%*s offset=%hu",
             cq=self.cmd_queue)
+        if self._mcu.try_lookup_command("idm_get_chipid") is not None:
+            self.idm_get_chipid_cmd = self._mcu.lookup_command(
+                "idm_get_chipid", cq=self.cmd_queue)
+        tag_cmd = "idm_set_chipid_tag tag_low=%u tag_high=%u"
+        if self._mcu.try_lookup_command(tag_cmd) is not None:
+            self.idm_set_chipid_tag_cmd = self._mcu.lookup_command(
+                tag_cmd, cq=self.cmd_queue)
 
     def stats(self, eventtime):
         return False, "%s: coil_temp=%.1f refs=%s" % (
