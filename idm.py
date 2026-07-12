@@ -137,7 +137,13 @@ class IDMProbe:
                                             self._handle_mcu_identify)
         self._mcu.register_config_callback(self._build_config)
         self._mcu.register_response(self._handle_idm_data, "idm_data")
-        self._mcu.register_response(self._handle_idm_chipid, "idm_chipid")
+        if hasattr(self._mcu, "register_serial_response"):
+            self._mcu.register_serial_response(
+                self._handle_idm_chipid,
+                "idm_chipid chip_id=%s tag_match=%c")
+        else:
+            self._mcu.register_response(
+                self._handle_idm_chipid, "idm_chipid")
         # Probe results
         self.results = []
         # Register webhooks

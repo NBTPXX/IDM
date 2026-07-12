@@ -47,9 +47,11 @@ REG_INT_ENABLE = 0x2E
 REG_INT_SOURCE = 0x30
 
 DUR_SCALE = 0.000625  # 0.625 msec / LSB
-TOUCH_SCALE = 0.0625 * adxl345.FREEFALL_ACCEL  # 62.5mg/LSB * Earth gravity in mm/s**2
+# 62.5mg/LSB * Earth gravity in mm/s**2
+TOUCH_SCALE = 0.0625 * adxl345.FREEFALL_ACCEL
 
 ADXL345_REST_TIME = .1
+
 
 class ThresholdResults:
     def __init__(self, max_value, min_value, range_value, avg_value, median, sigma, in_range, early, late, nb_samples):
@@ -64,6 +66,7 @@ class ThresholdResults:
      self.late = late
      self.nb_samples = nb_samples
 
+
 class Scanner:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -73,7 +76,8 @@ class Scanner:
         self.sensor_alt = config.get("sensor_alt", None)
 
         if not self.sensor and not self.sensor_alt:
-            raise self.printer.command_error("Please set at least one sensor type (sensor or sensor_alt) in printer.cfg")
+            raise self.printer.command_error(
+                "Please set at least one sensor type (sensor or sensor_alt) in printer.cfg")
         self._has_idm = any(sensor and sensor.lower() == "idm"
                             for sensor in (self.sensor, self.sensor_alt))
         self.chip_id = None
@@ -86,35 +90,40 @@ class Scanner:
         self.backlash_comp = config.getfloat("backlash_comp", 0.5)
 
         if config.get("temp_sensor_override", None):
-            self.thermistor_override = config.printer.load_object(config, "temperature_sensor " + config.get("temp_sensor_override"))
+            self.thermistor_override = config.printer.load_object(
+                config, "temperature_sensor " + config.get("temp_sensor_override"))
         else:
             self.thermistor_override = None
 
-        self.model_temp_warning_disable = config.getint("model_temp_warning_disable", 0)
+        self.model_temp_warning_disable = config.getint(
+            "model_temp_warning_disable", 0)
         self.probe_speed = config.getfloat("probe_speed", self.speed)
 
         if config.has_section("bed_mesh"):
             mesh_config = config.getsection("bed_mesh")
             if mesh_config.get("zero_reference_position", None) is not None:
                 if config.get("scanner_touch_location", None) is not None:
-                    manual_location = config.get("scanner_touch_location").split(",")
+                    manual_location = config.get(
+                        "scanner_touch_location").split(",")
                     if manual_location:
                         self.touch_location = manual_location
-                else: 
-                    self.touch_location = mesh_config.get('zero_reference_position').split(",")
+                else:
+                    self.touch_location = mesh_config.get(
+                        'zero_reference_position').split(",")
             else:
                 stepper_x = config.getsection("stepper_x")
                 use_x = stepper_x.getfloat("position_max") / 2
                 stepper_y = config.getsection("stepper_y")
                 use_y = stepper_y.getfloat("position_max") / 2
-                raise self.printer.command_error(f"Please update your [bed_mesh] section to include zero_reference_position: {use_x:.2f},{use_y:.2f} in printer.cfg.\nPlease read the manual")
+                raise self.printer.command_error(
+                    f"Please update your [bed_mesh] section to include zero_reference_position: {use_x:.2f},{use_y:.2f} in printer.cfg.\nPlease read the manual")
 
         atypes = {"median": "median", "average": "average"}
         self.samples_config = {
-            'samples': config.getfloat("samples",5, above=0.),
-            'retract_dist': config.getfloat("samples_retract_dist",5, above=0.),
-            'tolerance': config.getfloat("samples_tolerance",0.2, minval=0.),
-            'tolerance_retries': config.getint("samples_tolerance_retries",4, minval=0),
+            'samples': config.getfloat("samples", 5, above=0.),
+            'retract_dist': config.getfloat("samples_retract_dist", 5, above=0.),
+            'tolerance': config.getfloat("samples_tolerance", 0.2, minval=0.),
+            'tolerance_retries': config.getint("samples_tolerance_retries", 4, minval=0),
             'result': config.getchoice('samples_result', atypes, 'median')
         }
 
@@ -133,26 +142,31 @@ class Scanner:
             if z_home_config.get("speed", None) is not None:
                 self.z_hop_speed = z_home_config.getfloat("speed")
             else:
-                self.z_hop_speed = config.getfloat("z_hop_speed", 5.0, above=0.0)
-        else: 
+                self.z_hop_speed = config.getfloat(
+                    "z_hop_speed", 5.0, above=0.0)
+        else:
             self.z_hop_dist = config.getfloat("z_hop_dist", 5.0, above=0.0)
             self.z_hop_speed = config.getfloat("z_hop_speed", 5.0, above=0.0)
 
         self.int_map = 0x40
-        self.touch_thresh = config.getfloat('touch_thresh', 5000, minval=TOUCH_SCALE, maxval=100000.)
-        self.touch_dur = config.getfloat('touch_dur', 0.01, above=DUR_SCALE, maxval=0.1)
+        self.touch_thresh = config.getfloat(
+            'touch_thresh', 5000, minval=TOUCH_SCALE, maxval=100000.)
+        self.touch_dur = config.getfloat(
+            'touch_dur', 0.01, above=DUR_SCALE, maxval=0.1)
         self.adxl345 = None
 
-        self.calibration_method = config.get("calibration_method","scan")
+        self.calibration_method = config.get("calibration_method", "scan")
         self.trigger_method = 0
 
         self.trigger_distance = config.getfloat("trigger_distance", 2.0)
-        self.trigger_dive_threshold = config.getfloat("trigger_dive_threshold", 1.5)
+        self.trigger_dive_threshold = config.getfloat(
+            "trigger_dive_threshold", 1.5)
         self.trigger_hysteresis = config.getfloat("trigger_hysteresis", 0.006)
         self.z_settling_time = config.getint("z_settling_time", 5, minval=0)
 
-        max_speed_value = config.getfloat("scanner_touch_max_speed", 10, above=0, maxval=30)
-        ## NEW VARIABLES HERE
+        max_speed_value = config.getfloat(
+            "scanner_touch_max_speed", 10, above=0, maxval=30)
+        # NEW VARIABLES HERE
         self.scanner_touch_config = {
             'accel': config.getfloat("scanner_touch_accel", 100, above=0, minval=100),
             'max_speed': max_speed_value,
@@ -172,7 +186,8 @@ class Scanner:
         self.probe_calibrate_z = 0.
 
         if config.getint("detect_threshold_z", None) is not None:
-            raise self.printer.command_error("Please change detect_threshold_z to scanner_touch_threshold in printer.cfg")
+            raise self.printer.command_error(
+                "Please change detect_threshold_z to scanner_touch_threshold in printer.cfg")
         self.detect_threshold_z = self.scanner_touch_config["threshold"]
         self.previous_probe_success = None
 
@@ -205,7 +220,8 @@ class Scanner:
         self.mesh_helper = ScannerMeshHelper.create(self, config)
 
         self._stream_en = 0
-        self._stream_timeout_timer = self.reactor.register_timer(self._stream_timeout)
+        self._stream_timeout_timer = self.reactor.register_timer(
+            self._stream_timeout)
         self._stream_callbacks = {}
         self._stream_latency_requests = {}
         self._stream_buffer = []
@@ -224,7 +240,7 @@ class Scanner:
         self.raw_axis_twist_comp = None
 
         mainsync = self.printer.lookup_object("mcu")._clocksync
-        mcu = config.get("mcu",None)
+        mcu = config.get("mcu", None)
         if not mcu is None:
             if mcu == "mcu":
                 self._mcu = self.printer.lookup_object("mcu")
@@ -237,15 +253,17 @@ class Scanner:
         self.mcu_probe = ScannerEndstopWrapper(self)
 
         ppins = self.printer.lookup_object('pins')
-        probe_pin = config.get('probe_pin',"none")
+        probe_pin = config.get('probe_pin', "none")
 
         self.results = []
 
         if probe_pin != "none":
-            pin_params = ppins.lookup_pin(probe_pin, can_invert=True, can_pullup=True)
+            pin_params = ppins.lookup_pin(
+                probe_pin, can_invert=True, can_pullup=True)
 
             adxl_mcu = pin_params['chip']
-            self.endstop_mcu_endstop = adxl_mcu.setup_pin('endstop', pin_params)
+            self.endstop_mcu_endstop = adxl_mcu.setup_pin(
+                'endstop', pin_params)
             self.endstop_add_stepper = self.endstop_mcu_endstop.add_stepper
         else:
             self.endstop_mcu_endstop = None
@@ -259,11 +277,18 @@ class Scanner:
                                             self._handle_mcu_identify)
         self._mcu.register_config_callback(self._build_config)
         if hasattr(self._mcu, "register_serial_response"):
-            self._mcu.register_serial_response(self._handle_scanner_data, self.sensor.lower() + "_data clock=%u data=%u temp=%u")
+            self._mcu.register_serial_response(
+                self._handle_scanner_data, self.sensor.lower() + "_data clock=%u data=%u temp=%u")
         else:
-            self._mcu.register_response(self._handle_scanner_data, self.sensor.lower() + "_data")
-        if self._has_idm:
-            self._mcu.register_response(self._handle_idm_chipid, "idm_chipid")
+            self._mcu.register_response(
+                self._handle_scanner_data, self.sensor.lower() + "_data")
+        if hasattr(self._mcu, "register_serial_response"):
+                self._mcu.register_serial_response(
+                    self._handle_idm_chipid,
+                    "idm_chipid chip_id=%s tag_match=%c")
+            else:
+                self._mcu.register_response(
+                    self._handle_idm_chipid, "idm_chipid")
         # Register webhooks
         webhooks = self.printer.lookup_object("webhooks")
         self._api_dump_helper = APIDumpHelper(self)
@@ -707,7 +732,7 @@ class Scanner:
                 self.trigger_method = 3
             else:
                 return
-            #self.gcode.run_script_from_command("G28 Z")
+            # self.gcode.run_script_from_command("G28 Z")
             self.check_temp(gcmd)
             self._move([touch_location_x, touch_location_y, None], 40)
             self.toolhead.wait_moves()
