@@ -279,14 +279,12 @@ class Scanner:
         if hasattr(self._mcu, "register_serial_response"):
             self._mcu.register_serial_response(
                 self._handle_scanner_data, self.sensor.lower() + "_data clock=%u data=%u temp=%u")
-        else:
-            self._mcu.register_response(
-                self._handle_scanner_data, self.sensor.lower() + "_data")
-        if hasattr(self._mcu, "register_serial_response"):
             self._mcu.register_serial_response(
                 self._handle_idm_chipid,
                 "idm_chipid chip_id=%s tag_match=%c")
         else:
+            self._mcu.register_response(
+                self._handle_scanner_data, self.sensor.lower() + "_data")
             self._mcu.register_response(
                 self._handle_idm_chipid, "idm_chipid")
         # Register webhooks
