@@ -283,20 +283,17 @@ class Scanner:
             self._mcu.register_response(
                 self._handle_scanner_data, self.sensor.lower() + "_data")
         if hasattr(self._mcu, "register_serial_response"):
-                self._mcu.register_serial_response(
-                    self._handle_idm_chipid,
-                    "idm_chipid chip_id=%s tag_match=%c")
-            else:
-                self._mcu.register_response(
-                    self._handle_idm_chipid, "idm_chipid")
+            self._mcu.register_serial_response(
+                self._handle_idm_chipid,
+                "idm_chipid chip_id=%s tag_match=%c")
+        else:
+            self._mcu.register_response(
+                self._handle_idm_chipid, "idm_chipid")
         # Register webhooks
         webhooks = self.printer.lookup_object("webhooks")
         self._api_dump_helper = APIDumpHelper(self)
         webhooks.register_endpoint("scanner/status", self._handle_req_status)
         webhooks.register_endpoint("scanner/dump", self._handle_req_dump)
-
-
-
 
         # Register gcode commands
         self.gcode = self.printer.lookup_object("gcode")
