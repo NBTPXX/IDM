@@ -188,7 +188,7 @@ class Scanner:
             "accel": config.getfloat("scanner_touch_accel", 100, above=0, minval=100),
             "max_speed": max_speed_value,
             "speed": config.getfloat("scanner_touch_speed", 3, maxval=max_speed_value),
-            "retract_dist": config.getfloat("scanner_touch_retract_dist", 2, minval=1),
+            "retract_dist": config.getfloat("scanner_touch_retract_dist", 5, minval=1),
             "retract_speed": config.getfloat(
                 "scanner_touch_retract_speed", 10, minval=1
             ),
