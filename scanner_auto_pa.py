@@ -28,6 +28,10 @@ class ScannerAutoPA:
             "SCANNER_AUTO_PA", self.cmd_SCANNER_AUTO_PA,
             desc="Calibrate Pressure Advance using Scanner frequency data",
         )
+        self.gcode.register_command(
+            "SCANNER_AUTO_PA_DEBUG", self.cmd_SCANNER_AUTO_PA_DEBUG,
+            desc="Capture one Scanner Pressure Advance debug cycle",
+        )
 
     def cmd_SCANNER_AUTO_PA(self, gcmd):
         toolhead = self.printer.lookup_object("toolhead")
@@ -86,6 +90,36 @@ class ScannerAutoPA:
                 "SET_VELOCITY_LIMIT ACCEL=%.3f" % (original_accel,)
             )
 
+    def cmd_SCANNER_AUTO_PA_DEBUG(self, gcmd):
+        toolhead = self.printer.lookup_object("toolhead")
+        self._verify_ready(toolhead, gcmd)
+        settings = self._settings(gcmd)
+        settings["cycles"] = gcmd.get_int("CYCLES", 1, minval=1)
+        filename = os.path.basename(gcmd.get("FILENAME", "scanner-auto-pa-debug.csv"))
+        extruder = toolhead.get_extruder()
+        eventtime = self.printer.get_reactor().monotonic()
+        original_pa = extruder.get_status(eventtime).get("pressure_advance", 0.0)
+        original_accel = toolhead.get_status(eventtime)["max_accel"]
+        k = gcmd.get_float("K", original_pa, minval=0.0)
+        try:
+            self.gcode.run_script_from_command(
+                "SET_VELOCITY_LIMIT ACCEL=%.3f" % (settings["accel"],)
+            )
+            baseline, samples = self._capture_candidate(toolhead, k, settings)
+            result = self._analyse_candidate(k, baseline, samples)
+            if not result["valid"]:
+                raise gcmd.error("SCANNER_AUTO_PA_DEBUG: " + result["reason"])
+            self._export_debug(filename, baseline, samples)
+            gcmd.respond_info(
+                "SCANNER_AUTO_PA_DEBUG wrote /tmp/%s with %d samples"
+                % (filename, result["sample_count"])
+            )
+        finally:
+            self._set_pa(original_pa)
+            self.gcode.run_script_from_command(
+                "SET_VELOCITY_LIMIT ACCEL=%.3f" % (original_accel,)
+            )
+
     def _verify_ready(self, toolhead, gcmd):
         if self.scanner.model is None:
             raise gcmd.error("SCANNER_AUTO_PA requires a loaded Scanner model")
@@ -126,6 +160,10 @@ class ScannerAutoPA:
         return [settings["start_k"] + index * settings["step"] for index in range(count + 1)]
 
     def _run_candidate(self, toolhead, k, settings):
+        baseline, samples = self._capture_candidate(toolhead, k, settings)
+        return self._analyse_candidate(k, baseline, samples)
+
+    def _capture_candidate(self, toolhead, k, settings):
         samples = []
 
         def capture(sample):
@@ -146,7 +184,7 @@ class ScannerAutoPA:
             baseline_count = len(samples)
             self._run_bursts(toolhead, settings)
             toolhead.wait_moves()
-        return self._analyse_candidate(k, samples[:baseline_count], samples[baseline_count:])
+        return samples[:baseline_count], samples[baseline_count:]
 
     def _run_bursts(self, toolhead, settings):
         self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=SCANNER_AUTO_PA")
@@ -221,6 +259,29 @@ class ScannerAutoPA:
             writer = csv.DictWriter(output, fieldnames=sorted(results[0].keys()))
             writer.writeheader()
             writer.writerows(results)
+
+    def _export_debug(self, filename, baseline, samples):
+        baseline_freq = statistics.median(sample["freq"] for sample in baseline)
+        path = os.path.join("/tmp", filename)
+        fields = [
+            "phase", "time", "data", "freq", "pressure_proxy", "temp",
+            "pos_x", "pos_y", "pos_z",
+        ]
+        with open(path, "w", newline="") as output:
+            writer = csv.DictWriter(output, fieldnames=fields)
+            writer.writeheader()
+            for phase, source in (("baseline", baseline), ("test", samples)):
+                for sample in source:
+                    pos = sample.get("pos") or (None, None, None)
+                    writer.writerow({
+                        "phase": phase,
+                        "time": sample.get("time"),
+                        "data": sample.get("data"),
+                        "freq": sample["freq"],
+                        "pressure_proxy": pressure_proxy(baseline_freq, sample["freq"]),
+                        "temp": sample.get("temp"),
+                        "pos_x": pos[0], "pos_y": pos[1], "pos_z": pos[2],
+                    })
 
 
 def load_config(config):

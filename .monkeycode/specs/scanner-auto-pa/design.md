@@ -7,6 +7,8 @@ Updated: 2026-07-19
 
 `scanner_auto_pa.py` 提供 `SCANNER_AUTO_PA` G-code 命令。模块将 Scanner 原始频率作为喷嘴背压代理信号，扫描 Pressure Advance K 值并返回评分最低的候选值。
 
+`SCANNER_AUTO_PA_DEBUG` 使用相同的测试运动执行单个 K、单周期采集，导出逐样本 CSV 供信号质量检查。
+
 ## Architecture
 
 ```mermaid
@@ -36,12 +38,15 @@ SCANNER_AUTO_PA [START_K=0.00] [END_K=0.10] [STEP=0.002] [CYCLES=14]
                 [LOW_FLOW=1.92] [HIGH_FLOW=19.24]
                 [LOW_TIME=1.0] [HIGH_TIME=0.25]
                 [ACCEL=5000] [APPLY=0]
+
+SCANNER_AUTO_PA_DEBUG [K=0.04] [CYCLES=1] [FILENAME=pa-debug.csv]
 ```
 
 - 流量单位为 mm3/s。
 - 模块基于配置的 `filament_diameter` 将体积流量换算为 E 轴线速度。
 - 每段挤出附带小幅 XY 往复运动，保证 Pressure Advance 应用于打印运动。
 - `APPLY=1` 时，模块在成功分析后设置推荐 K；默认恢复测试前 K。
+- 调试命令总是恢复测试前 K，并将文件写入 `/tmp/<FILENAME>`。
 
 ## Data Models
 
@@ -65,6 +70,7 @@ CandidateResult: k, sample_count, overshoot, undershoot, plateau_slope, area, sc
 - Scanner 未加载模型、轴未 homing、挤出机缺失或样本不足时，命令报告错误。
 - 运行期间发生异常时，模块停止数据流并恢复原始 Pressure Advance 和加速度限制。
 - 候选 K 没有足够有效样本时，模块报告该候选 K 无效并继续其余候选值。
+- 调试导出文件名使用基础文件名，输出目录固定为 `/tmp`。
 
 ## Test Strategy
 

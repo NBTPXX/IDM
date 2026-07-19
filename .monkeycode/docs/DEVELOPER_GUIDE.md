@@ -26,3 +26,9 @@ git diff --check
 2. 观察 Scanner 原始频率在流量阶跃时的方向与重复性。
 3. 扩展到多个 K 候选值。
 4. 在 `APPLY=0` 下复核推荐 K，再使用 `APPLY=1`。
+
+原始信号检查可执行：
+
+```gcode
+SCANNER_AUTO_PA_DEBUG K=0.04 CYCLES=1 FILENAME=pa-debug.csv
+```

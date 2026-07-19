@@ -57,3 +57,14 @@ Scanner Auto PA 使用 Scanner 的原始感应数据作为喷嘴背压代理信�
 1. WHEN 用户启用数据导出，系统 SHALL 将每个候选 K 的原始样本、背压代理信号和评分写入 CSV 文件。
 2. WHEN 系统计算候选 K 评分，系统 SHALL 分别记录超调、欠调、相位滞后、稳态斜率和积分面积指标。
 3. WHEN 用户请求调试输出，系统 SHALL 输出每个 K 的有效样本数量和评分指标。
+
+### Requirement 5
+
+**User Story:** 作为开发者，我希望执行单次自动 PA 调试测试，以验证 Scanner 信号是否适合作为背压代理。
+
+#### Acceptance Criteria
+
+1. WHEN 用户执行 `SCANNER_AUTO_PA_DEBUG`，系统 SHALL 执行一个指定 K 值的低流量、高流量、低流量测试周期。
+2. WHEN 调试测试完成，系统 SHALL 将逐样本时间、原始 data、平滑数据、频率、背压代理、温度和位置写入 CSV 文件。
+3. IF 调试测试的有效样本数量少于配置的最小数量，系统 SHALL 报告样本不足。
+4. WHEN 调试测试结束，系统 SHALL 恢复命令开始前的 Pressure Advance 和加速度限制。

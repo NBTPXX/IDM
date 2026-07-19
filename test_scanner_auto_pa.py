@@ -1,5 +1,6 @@
 import math
 import unittest
+from unittest.mock import mock_open, patch
 
 from scanner_auto_pa import (
     ScannerAutoPA,
@@ -40,6 +41,16 @@ class ScannerAutoPATest(unittest.TestCase):
 
         self.assertFalse(result["valid"])
         self.assertEqual(result["reason"], "insufficient Scanner samples")
+
+    def test_debug_export_writes_baseline_and_test_rows(self):
+        mocked_open = mock_open()
+        baseline = [{"time": 1.0, "data": 100, "freq": 1000.0, "temp": 25.0, "pos": [1, 2, 3]}]
+        samples = [{"time": 2.0, "data": 98, "freq": 998.0, "temp": 25.0, "pos": [2, 2, 3]}]
+
+        with patch("builtins.open", mocked_open):
+            self.auto_pa._export_debug("pa-debug.csv", baseline, samples)
+
+        self.assertTrue(mocked_open.called)
 
 
 if __name__ == "__main__":
