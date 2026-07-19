@@ -639,10 +639,6 @@ class Scanner:
 
                 retract_position = self.toolhead.get_position()[:]
                 retract_position[2] = min(retract_position[2] + retract_dist, z_max)
-                self.log_debug_info(
-                    True, gcmd,
-                    f"Retracting to {retract_position} at {retract_speed:.3f} mm/s"
-                )
                 self.toolhead.move(retract_position, retract_speed)
                 self.toolhead.dwell(1.0)
 
