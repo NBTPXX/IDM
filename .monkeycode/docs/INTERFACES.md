@@ -43,3 +43,11 @@ SCANNER_AUTO_PA_DEBUG K=0.04 CYCLES=1 LOW_FLOW=1 HIGH_FLOW=2 FILENAME=pa-debug.c
 ```
 
 该命令执行单个候选 K 的测试周期，并将基线与测试阶段的 `time`、`data`、`freq`、`pressure_proxy`、`temp` 和 XYZ 位置写入 `/tmp/pa-debug.csv`。命令结束后恢复原 Pressure Advance 和加速度限制。
+
+## IDM 阈值扫描日志
+
+```gcode
+IDM_THRESHOLD_SCAN DEBUG=1
+```
+
+`DEBUG=1` 会输出每次 Touch 触发的 `probe at X,Y is z=...` 记录，同时保留每个阈值的资格检查和验证汇总。默认 `DEBUG=0` 仅输出阈值阶段汇总。

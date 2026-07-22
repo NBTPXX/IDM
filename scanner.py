@@ -1880,7 +1880,7 @@ class Scanner:
         gcmd.respond_info("Result is z=%.6f" % (pos[2],))
 
     cmd_SCANNER_THRESHOLD_SCAN_help = (
-        "Scan the list of thresholds to find one that works best"
+        "Scan thresholds for repeatability; DEBUG=1 logs each probe result"
     )
 
     def cmd_SCANNER_THRESHOLD_SCAN(self, gcmd):
@@ -1892,6 +1892,7 @@ class Scanner:
         qualify_samples = skip_samples + qualify_samples
         verify_samples = gcmd.get_int("VERIFY_SAMPLES", 5)
         skip_samples = gcmd.get_int("SKIP", 0)
+        debug = gcmd.get_int("DEBUG", 0, minval=0, maxval=1) != 0
         target = gcmd.get_float("TARGET", 0.08, minval=0)
         range_value = gcmd.get_float("RANGE_VALUE", 0.05, minval=0.0125)
         lift_speed = self.get_lift_speed(gcmd)
@@ -1928,7 +1929,7 @@ class Scanner:
                     5,
                     False,
                     lift_speed,
-                    False,
+                    debug,
                     best_threshold_range,
                 )
                 if (
@@ -1953,7 +1954,7 @@ class Scanner:
                         5,
                         False,
                         lift_speed,
-                        False,
+                        debug,
                         best_threshold_range,
                     )
                     gcmd.respond_info(
