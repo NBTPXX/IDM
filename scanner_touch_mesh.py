@@ -122,3 +122,7 @@ def interpolate_matrix(matrix, min_x, max_x, min_y, max_y, x_count, y_count, x, 
     lower = matrix[y0][x0] * (1 - x_fraction) + matrix[y0][x0 + 1] * x_fraction
     upper = matrix[y0 + 1][x0] * (1 - x_fraction) + matrix[y0 + 1][x0 + 1] * x_fraction
     return lower * (1 - y_fraction) + upper * y_fraction
+
+
+def needs_touch_retry(touch_value, scanner_value, threshold):
+    return abs(touch_value - scanner_value) - threshold > 1.0e-9

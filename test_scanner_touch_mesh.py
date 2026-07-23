@@ -6,6 +6,7 @@ from scanner_touch_mesh import (
     difference_matrix,
     interpolate_matrix,
     matrix_range,
+    needs_touch_retry,
 )
 
 
@@ -107,6 +108,10 @@ class CompensationProfileTest(unittest.TestCase):
         matrix = [[0.0, 1.0], [1.0, 2.0]]
 
         self.assertIsNone(interpolate_matrix(matrix, 0, 10, 0, 10, 2, 2, -0.1, 5))
+
+    def test_retry_only_when_difference_exceeds_threshold(self):
+        self.assertTrue(needs_touch_retry(1.06, 1.0, 0.05))
+        self.assertFalse(needs_touch_retry(1.05, 1.0, 0.05))
 
 
 if __name__ == "__main__":

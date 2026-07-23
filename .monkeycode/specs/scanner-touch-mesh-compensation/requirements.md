@@ -21,10 +21,13 @@ Scanner Touch Mesh Compensation 通过在同一张床网格上分别执行 Scann
 
 1. WHEN 用户执行 `BED_MESH_CALIBRATE METHOD=touch_compensation`，系统 SHALL 使用 `[bed_mesh] probe_count` 采集 Scanner Mesh。
 2. WHEN 用户未配置 `touch_mesh_probe_count`，系统 SHALL 使用 `5,5` 采集 Touch Mesh。
-3. WHEN 用户未配置 `touch_mesh_samples`，系统 SHALL 在每个 Touch 网格坐标采集 3 个有效 Touch 样本。
-4. WHEN 系统完成两张网格采集，系统 SHALL 将 Scanner Mesh 插值到 Touch Mesh 坐标并计算 `touch_height - scanner_height`。
-5. IF 任一网格点的 Touch 采样失败，系统 SHALL 终止校准。
-6. IF 全床补偿校准终止，系统 SHALL 保留已有 Compensation Matrix。
+3. WHEN 系统开始 Touch Mesh 采样，系统 SHALL 在每个 Touch 网格坐标采集 1 个初始 Touch 样本。
+4. WHEN 初始 Touch 样本与 Scanner 插值值的绝对差异大于 `touch_mesh_retry_threshold`，系统 SHALL 追加 `touch_mesh_samples` 个 Touch 样本。
+5. WHEN 用户未配置 `touch_mesh_retry_threshold`，系统 SHALL 使用 `0.05 mm`。
+6. WHEN 用户未配置 `touch_mesh_samples`，系统 SHALL 追加 3 个 Touch 样本。
+7. WHEN 系统完成两张网格采集，系统 SHALL 将 Scanner Mesh 插值到 Touch Mesh 坐标并计算 `touch_height - scanner_height`。
+8. IF 任一网格点的 Touch 采样失败，系统 SHALL 终止校准。
+9. IF 全床补偿校准终止，系统 SHALL 保留已有 Compensation Matrix。
 
 ### Requirement 2
 
