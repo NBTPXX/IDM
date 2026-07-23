@@ -20,9 +20,9 @@ touch_mesh_samples: 3
 touch_mesh_retry_threshold: 0.05
 ```
 
-`touch_mesh_probe_count` 控制 Touch Mesh 的 X、Y 点数，默认 `5,5`。系统先完成所有点的单次 Touch，再以网格几何中心对齐 Touch 与 Scanner 数据。中心对齐后的绝对差异大于 `touch_mesh_retry_threshold` 时，系统将该点加入复测列表并追加 `touch_mesh_samples` 次 Touch，默认阈值 `0.05 mm`、追加次数 `3`。系统使用该点所有 Touch 结果的中位数计算补偿。Scanner Mesh 继续使用 `[bed_mesh] probe_count`，并在 Touch 网格坐标上进行双线性插值后计算补偿。
+`touch_mesh_probe_count` 控制 Touch Mesh 的 X、Y 点数，默认 `5,5`。系统先完成所有点的单次 Touch，再以网格几何中心对齐 Touch 与 Scanner 数据。中心对齐后的绝对差异大于 `touch_mesh_retry_threshold` 时，系统将该点加入复测列表并调用 `run_touch_probe(..., touch_mesh_samples)` 复测，默认阈值 `0.05 mm`、复测次数 `3`。复测点采用该次多样本 Probe 的聚合结果，未复测点保留首次结果。Scanner Mesh 继续使用 `[bed_mesh] probe_count`，并在 Touch 网格坐标上进行双线性插值后计算补偿。
 
-每次初始采样的 Probe 日志会显示 `samples=1`。系统会输出完整的 `Touch mesh retry points` 坐标列表，并输出中心对齐后的两张网格和最终补偿矩阵。
+每次初始采样的 Probe 日志会显示 `samples=1`。系统会输出完整的 `Touch mesh retry points` 坐标列表；校准结束时只输出最终补偿矩阵和差值范围。
 
 `SAVE_CONFIG` 会生成 `[scanner touch_mesh_compensation]` 段保存补偿矩阵。该段由系统管理，Klipper 启动时会将其识别为持久化补偿数据。
 

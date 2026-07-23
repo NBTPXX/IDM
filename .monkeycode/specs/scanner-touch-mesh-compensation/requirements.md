@@ -23,7 +23,7 @@ Scanner Touch Mesh Compensation 通过在同一张床网格上分别执行 Scann
 2. WHEN 用户未配置 `touch_mesh_probe_count`，系统 SHALL 使用 `5,5` 采集 Touch Mesh。
 3. WHEN 系统开始 Touch Mesh 采样，系统 SHALL 在每个 Touch 网格坐标采集 1 个初始 Touch 样本。
 4. WHEN 系统完成初始 Touch Mesh 采样，系统 SHALL 使用网格几何中心对齐初始 Touch Mesh 与 Scanner 插值网格。
-5. WHEN 中心对齐后的初始 Touch 样本与 Scanner 插值值的绝对差异大于 `touch_mesh_retry_threshold`，系统 SHALL 将该网格坐标加入复测列表并追加 `touch_mesh_samples` 个 Touch 样本。
+5. WHEN 中心对齐后的初始 Touch 样本与 Scanner 插值值的绝对差异大于 `touch_mesh_retry_threshold`，系统 SHALL 将该网格坐标加入复测列表并通过 `run_touch_probe` 采集 `touch_mesh_samples` 个 Touch 样本。
 6. WHEN 系统生成复测列表，系统 SHALL 在追加采样前输出复测列表中的全部网格坐标。
 7. WHEN 用户未配置 `touch_mesh_retry_threshold`，系统 SHALL 使用 `0.05 mm`。
 8. WHEN 用户未配置 `touch_mesh_samples`，系统 SHALL 追加 3 个 Touch 样本。

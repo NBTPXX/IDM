@@ -3699,11 +3699,10 @@ class ScannerMeshHelper:
                 self.scanner._zhop()
                 toolhead.manual_move([x, y, None], speed)
                 toolhead.wait_moves()
-                touch_values = [touch_matrix[yi][xi]]
-                for _ in range(self.touch_samples):
-                    self.scanner.trigger_method = 1
-                    touch_values.append(self.scanner.run_touch_probe(gcmd, 1)[2])
-                touch_matrix[yi][xi] = float(np.median(touch_values))
+                self.scanner.trigger_method = 1
+                touch_matrix[yi][xi] = self.scanner.run_touch_probe(
+                    gcmd, self.touch_samples
+                )[2]
         finally:
             self.scanner.trigger_method = original_trigger_method
             self.scanner.set_accel(max_accel)
@@ -3729,10 +3728,6 @@ class ScannerMeshHelper:
         profile.save(self.scanner.printer.lookup_object("configfile"))
         self.compensation_profile = profile
         minimum, maximum = matrix_range(compensation)
-        gcmd.respond_info("Scanner mesh: %s" % (json.dumps(scanner_matrix),))
-        gcmd.respond_info("Touch mesh: %s" % (json.dumps(touch_matrix),))
-        gcmd.respond_info("Centered Scanner mesh: %s" % (json.dumps(aligned_scanner),))
-        gcmd.respond_info("Centered Touch mesh: %s" % (json.dumps(aligned_touch),))
         gcmd.respond_info("Touch mesh compensation: %s" % (json.dumps(compensation),))
         gcmd.respond_info(
             "Touch mesh compensation range: %.6f to %.6f" % (minimum, maximum)
