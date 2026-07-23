@@ -33,6 +33,7 @@ from . import bed_mesh
 from . import thermistor
 from . import adc_temperature
 from . import adxl345
+from .scanner_touch_mesh import CompensationProfile, difference_matrix, matrix_range
 from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
 
@@ -3371,6 +3372,8 @@ class ScannerMeshHelper:
         method = gcmd.get("METHOD", "scanner").lower()
         if method == "scanner":
             self.calibrate(gcmd)
+        elif method == "touch_compensation":
+            self.calibrate_touch_compensation(gcmd)
         else:
             self.prev_gcmd(gcmd)
 
@@ -3482,7 +3485,7 @@ class ScannerMeshHelper:
 
         return points
 
-    def calibrate(self, gcmd):
+    def calibrate(self, gcmd, apply_mesh=True):
         self.min_x, self.min_y = coord_fallback(
             gcmd,
             "MESH_MIN",
@@ -3579,7 +3582,58 @@ class ScannerMeshHelper:
             self.scanner._stop_streaming()
 
         matrix = self._process_clusters(clusters, gcmd)
-        self._apply_mesh(matrix, gcmd)
+        if apply_mesh:
+            self._apply_mesh(matrix, gcmd)
+        return matrix
+
+    def calibrate_touch_compensation(self, gcmd):
+        toolhead = self.scanner.toolhead
+        curtime = self.scanner.reactor.monotonic()
+        homed_axes = toolhead.get_status(curtime)["homed_axes"]
+        if not all(axis in homed_axes for axis in ("x", "y", "z")):
+            raise gcmd.error("Must home X, Y, and Z before touch mesh compensation")
+
+        scanner_matrix = self.calibrate(gcmd, apply_mesh=False)
+        original_trigger_method = self.scanner.trigger_method
+        max_accel = toolhead.get_status(self.scanner.reactor.monotonic())["max_accel"]
+        speed = gcmd.get_float("SPEED", self.speed, above=0.0)
+        touch_matrix = []
+        try:
+            self.scanner.check_temp(gcmd)
+            self.scanner.trigger_method = 1
+            for yi in range(self.res_y):
+                row = []
+                y = self.min_y + yi * self.step_y
+                for xi in range(self.res_x):
+                    x = self.min_x + xi * self.step_x
+                    self.scanner._zhop()
+                    toolhead.manual_move([x, y, None], speed)
+                    toolhead.wait_moves()
+                    row.append(self.scanner.run_touch_probe(gcmd)[2])
+                touch_matrix.append(row)
+        finally:
+            self.scanner.trigger_method = original_trigger_method
+            self.scanner.set_accel(max_accel)
+
+        compensation = difference_matrix(touch_matrix, scanner_matrix)
+        profile = CompensationProfile(
+            self.min_x,
+            self.max_x,
+            self.min_y,
+            self.max_y,
+            self.res_x,
+            self.res_y,
+            compensation,
+        )
+        profile.save(self.scanner.printer.lookup_object("configfile"))
+        minimum, maximum = matrix_range(compensation)
+        gcmd.respond_info("Scanner mesh: %s" % (json.dumps(scanner_matrix),))
+        gcmd.respond_info("Touch mesh: %s" % (json.dumps(touch_matrix),))
+        gcmd.respond_info("Touch mesh compensation: %s" % (json.dumps(compensation),))
+        gcmd.respond_info(
+            "Touch mesh compensation range: %.6f to %.6f" % (minimum, maximum)
+        )
+        gcmd.respond_info("Run SAVE_CONFIG to persist touch mesh compensation")
 
     def _shrink_to_excluded_objects(self, gcmd, margin):
         bound_min_x, bound_max_x = None, None

@@ -14,9 +14,9 @@ fi
 echo "idm: installing python requirements to env, this may take 10+ minutes."
 "${KENV}/bin/pip" install -r "${BKDIR}/requirements.txt"
 
-# update link to scanner.py, idm.py
+# Update links to Klipper extra modules.
 echo "IDM: linking modules into klipper"
-for file in idm.py scanner.py; do
+for file in idm.py scanner.py scanner_touch_mesh.py; do
     if [ -e "${KDIR}/klippy/extras/${file}" ]; then
         rm "${KDIR}/klippy/extras/${file}"
     fi
