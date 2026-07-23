@@ -19,6 +19,7 @@ git diff --check
 - `scanner_touch_mesh.py` 维护 `[scanner touch_mesh_compensation]` 的二维补偿矩阵与网格元数据。
 - 配置通过 Klipper `configfile.set()` 写入运行时状态，执行 `SAVE_CONFIG` 后持久化。
 - 补偿矩阵的行优先顺序为 `[y][x]`，并要求网格范围具有正面积以及每轴至少两个点。
+- `BED_MESH_CALIBRATE METHOD=touch_compensation` 先生成未应用的 Scanner Mesh，再在相同逻辑网格坐标采集 Touch Mesh，并保存 `touch - scanner` 差值。
 
 ## Scanner Auto PA 开发约定
 
