@@ -126,3 +126,62 @@ def interpolate_matrix(matrix, min_x, max_x, min_y, max_y, x_count, y_count, x, 
 
 def needs_touch_retry(touch_value, scanner_value, threshold):
     return abs(touch_value - scanner_value) - threshold > 1.0e-9
+
+
+def apply_compensation(profile, matrix, min_x, max_x, min_y, max_y):
+    y_count = len(matrix)
+    x_count = len(matrix[0]) if y_count else 0
+    if x_count < 2 or y_count < 2 or any(len(row) != x_count for row in matrix):
+        raise ValueError("scanner mesh requires a rectangular grid with at least two points per axis")
+
+    compensated = []
+    uncovered = []
+    for y_index, row in enumerate(matrix):
+        y = min_y + (max_y - min_y) * y_index / (y_count - 1)
+        compensated_row = []
+        for x_index, scanner_value in enumerate(row):
+            x = min_x + (max_x - min_x) * x_index / (x_count - 1)
+            correction = interpolate_matrix(
+                profile.matrix,
+                profile.min_x,
+                profile.max_x,
+                profile.min_y,
+                profile.max_y,
+                profile.x_count,
+                profile.y_count,
+                x,
+                y,
+            )
+            if correction is None:
+                uncovered.append((x, y))
+                compensated_row.append(scanner_value)
+            else:
+                compensated_row.append(scanner_value + correction)
+        compensated.append(compensated_row)
+    return compensated, uncovered
+
+
+def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
+    y_count = len(matrix_a)
+    x_count = len(matrix_a[0]) if y_count else 0
+    if (
+        x_count < 2
+        or y_count < 2
+        or len(matrix_b) != y_count
+        or any(len(row) != x_count for row in matrix_a)
+        or any(len(row) != x_count for row in matrix_b)
+    ):
+        raise ValueError("matrices require matching rectangular grids with at least two points per axis")
+
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+    center_a = interpolate_matrix(
+        matrix_a, min_x, max_x, min_y, max_y, x_count, y_count, center_x, center_y
+    )
+    center_b = interpolate_matrix(
+        matrix_b, min_x, max_x, min_y, max_y, x_count, y_count, center_x, center_y
+    )
+    return (
+        [[value - center_a for value in row] for row in matrix_a],
+        [[value - center_b for value in row] for row in matrix_b],
+    )

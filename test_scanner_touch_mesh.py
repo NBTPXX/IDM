@@ -3,6 +3,8 @@ import unittest
 from scanner_touch_mesh import (
     COMPENSATION_SECTION,
     CompensationProfile,
+    align_matrices_at_center,
+    apply_compensation,
     difference_matrix,
     interpolate_matrix,
     matrix_range,
@@ -112,6 +114,34 @@ class CompensationProfileTest(unittest.TestCase):
     def test_retry_only_when_difference_exceeds_threshold(self):
         self.assertTrue(needs_touch_retry(1.06, 1.0, 0.05))
         self.assertFalse(needs_touch_retry(1.05, 1.0, 0.05))
+
+    def test_compensation_applies_linear_gradient_at_scanner_coordinates(self):
+        profile = CompensationProfile(0, 10, 0, 10, 2, 2, [[0, 1], [1, 2]])
+        compensated, uncovered = apply_compensation(
+            profile, [[1, 1, 1], [1, 1, 1], [1, 1, 1]], 0, 10, 0, 10
+        )
+
+        self.assertEqual(uncovered, [])
+        self.assertEqual(compensated, [[1, 1.5, 2], [1.5, 2, 2.5], [2, 2.5, 3]])
+
+    def test_compensation_keeps_raw_values_outside_profile_coverage(self):
+        profile = CompensationProfile(0, 10, 0, 10, 2, 2, [[0.5, 0.5], [0.5, 0.5]])
+        compensated, uncovered = apply_compensation(
+            profile, [[1, 1, 1], [1, 1, 1]], 0, 20, 0, 10
+        )
+
+        self.assertEqual(compensated, [[1.5, 1.5, 1], [1.5, 1.5, 1]])
+        self.assertEqual(uncovered, [(20.0, 0.0), (20.0, 10.0)])
+
+    def test_center_alignment_removes_global_height_offset(self):
+        scanner = [[1, 2], [3, 4]]
+        touch = [[3, 4], [5, 6]]
+
+        centered_touch, centered_scanner = align_matrices_at_center(
+            touch, scanner, 0, 10, 0, 10
+        )
+
+        self.assertEqual(difference_matrix(centered_touch, centered_scanner), [[0, 0], [0, 0]])
 
 
 if __name__ == "__main__":
