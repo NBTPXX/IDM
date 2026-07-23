@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from scanner_touch_mesh import (
@@ -10,6 +11,15 @@ from scanner_touch_mesh import (
     interpolate_matrix,
     matrix_range,
     needs_touch_retry,
+    fill_round_mesh_edges,
+    mesh_probe_indices,
+    nearest_orbit_point_in_direction,
+    round_lattice_orbits,
+    round_lattice_layers,
+    rounded_layer_mesh_trajectory,
+    rounded_matrix_trajectory,
+    round_mesh_trajectory,
+    round_mesh_row_indices,
 )
 
 
@@ -164,6 +174,175 @@ class CompensationProfileTest(unittest.TestCase):
         self.assertAlmostEqual(segments[-2][0][0], 3.0)
         self.assertEqual(segments[-2][0][1:], [0.0, 3.0])
         self.assertEqual(segments[-1], ([3, 0, 5], 5))
+
+    def test_round_mesh_rows_follow_klipper_circle_geometry(self):
+        rows = [round_mesh_row_indices(5, index) for index in range(5)]
+
+        self.assertEqual(rows, [[2], [1, 2, 3], [0, 1, 2, 3, 4], [1, 2, 3], [2]])
+
+    def test_round_mesh_pads_corners_with_row_edge_measurements(self):
+        matrix = [
+            [None, None, 1.0, None, None],
+            [None, 2.0, 3.0, 4.0, None],
+            [5.0, 6.0, 7.0, 8.0, 9.0],
+            [None, 10.0, 11.0, 12.0, None],
+            [None, None, 13.0, None, None],
+        ]
+        rows = [round_mesh_row_indices(5, index) for index in range(5)]
+
+        filled = fill_round_mesh_edges(matrix, rows)
+
+        self.assertEqual(
+            filled,
+            [
+                [1.0, 1.0, 1.0, 1.0, 1.0],
+                [2.0, 2.0, 3.0, 4.0, 4.0],
+                [5.0, 6.0, 7.0, 8.0, 9.0],
+                [10.0, 10.0, 11.0, 12.0, 12.0],
+                [13.0, 13.0, 13.0, 13.0, 13.0],
+            ],
+        )
+
+    def test_round_mesh_probe_order_matches_klipper_serpentine_path(self):
+        self.assertEqual(
+            mesh_probe_indices(5, 5, circular=True),
+            [
+                (2, 0),
+                (3, 1),
+                (2, 1),
+                (1, 1),
+                (0, 2),
+                (1, 2),
+                (2, 2),
+                (3, 2),
+                (4, 2),
+                (3, 3),
+                (2, 3),
+                (1, 3),
+                (2, 4),
+            ],
+        )
+
+    def test_round_lattice_orbits_cover_each_non_center_target_once(self):
+        orbits = round_lattice_orbits(5)
+
+        self.assertEqual(len(orbits), 3)
+        self.assertEqual({point for orbit in orbits for point in orbit}, {
+            (2, 0), (0, 2), (-2, 0), (0, -2),
+            (1, 1), (-1, 1), (-1, -1), (1, -1),
+            (1, 0), (0, 1), (-1, 0), (0, -1),
+        })
+
+    def test_round_lattice_layers_remove_the_outer_x_y_boundary(self):
+        layers, matrix_points = round_lattice_layers(5)
+
+        self.assertEqual(layers, [{(2, 0), (0, 2), (-2, 0), (0, -2)}])
+        self.assertEqual(matrix_points, {
+            (x, y) for y in range(-1, 2) for x in range(-1, 2)
+        })
+
+    def test_round_lattice_layers_stop_at_the_first_complete_inner_matrix(self):
+        layers, matrix_points = round_lattice_layers(15)
+
+        self.assertGreater(len(layers), 1)
+        self.assertEqual(matrix_points, {
+            (x, y) for y in range(-4, 5) for x in range(-4, 5)
+        })
+        outer_extents = [max(max(abs(x), abs(y)) for x, y in layer) for layer in layers]
+        self.assertEqual(outer_extents, sorted(outer_extents, reverse=True))
+        self.assertTrue(all(
+            all(max(abs(x), abs(y)) == extent for x, y in layer)
+            for layer, extent in zip(layers, outer_extents)
+        ))
+
+    def test_round_mesh_trajectory_visits_targets_then_stops_at_center(self):
+        trajectory = round_mesh_trajectory((0, 0), 2, 5)
+        targets = {
+            (2, 0), (0, 2), (-2, 0), (0, -2),
+            (1, 1), (-1, 1), (-1, -1), (1, -1),
+            (1, 0), (0, 1), (-1, 0), (0, -1),
+        }
+        rounded = {(round(x, 6), round(y, 6)) for x, y in trajectory}
+
+        self.assertTrue(targets.issubset(rounded))
+        self.assertEqual(trajectory[-1], (0, 0))
+
+    def test_orbit_start_uses_nearest_angular_point_in_travel_direction(self):
+        points = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+
+        self.assertEqual(nearest_orbit_point_in_direction(points, -2.0, 1), 3)
+        self.assertEqual(nearest_orbit_point_in_direction(points, 2.0, -1), 1)
+
+    def test_round_mesh_trajectory_covers_shared_radius_orbits(self):
+        trajectory = round_mesh_trajectory((0, 0), 3, 7)
+        targets = {
+            (xi - 3, yi - 3)
+            for xi, yi in mesh_probe_indices(7, 7, circular=True)
+        }
+        rounded = {(round(x, 6), round(y, 6)) for x, y in trajectory}
+
+        self.assertTrue(targets.issubset(rounded))
+
+    def test_rounded_layer_trajectory_visits_every_round_mesh_target(self):
+        trajectory = rounded_layer_mesh_trajectory((0, 0), 3, 7)
+        targets = {
+            (xi - 3, yi - 3)
+            for xi, yi in mesh_probe_indices(7, 7, circular=True)
+        }
+
+        def lies_on_path(point):
+            for start, end in zip(trajectory, trajectory[1:]):
+                dx, dy = end[0] - start[0], end[1] - start[1]
+                length_squared = dx * dx + dy * dy
+                if length_squared == 0:
+                    continue
+                ratio = ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_squared
+                if 0 <= ratio <= 1:
+                    nearest_x = start[0] + ratio * dx
+                    nearest_y = start[1] + ratio * dy
+                    if math.hypot(point[0] - nearest_x, point[1] - nearest_y) < 1.0e-6:
+                        return True
+            return False
+
+        self.assertTrue(all(lies_on_path(point) for point in targets))
+        self.assertTrue(all(math.hypot(x, y) <= 3 + 1.0e-9 for x, y in trajectory))
+
+    def test_rounded_layer_trajectory_stays_within_configured_radius(self):
+        trajectory = rounded_layer_mesh_trajectory((10, -20), 70, 15)
+
+        self.assertTrue(all(
+            math.hypot(x - 10, y + 20) <= 70 + 1.0e-9
+            for x, y in trajectory
+        ))
+
+    def test_rounded_matrix_trajectory_uses_scanner_style_overscan_corners(self):
+        trajectory = rounded_matrix_trajectory((0, 0), 1, 10, 20)
+
+        self.assertTrue(any(abs(x) > 10 for x, _ in trajectory))
+        self.assertTrue(all(math.hypot(x, y) <= 20 + 1.0e-9 for x, y in trajectory))
+
+    def test_rounded_layer_trajectory_visits_every_fifteen_point_mesh_target(self):
+        trajectory = rounded_layer_mesh_trajectory((0, 0), 7, 15)
+        targets = {
+            (xi - 7, yi - 7)
+            for xi, yi in mesh_probe_indices(15, 15, circular=True)
+        }
+
+        def lies_on_path(point):
+            for start, end in zip(trajectory, trajectory[1:]):
+                dx, dy = end[0] - start[0], end[1] - start[1]
+                length_squared = dx * dx + dy * dy
+                if length_squared == 0:
+                    continue
+                ratio = ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_squared
+                if 0 <= ratio <= 1:
+                    nearest_x = start[0] + ratio * dx
+                    nearest_y = start[1] + ratio * dy
+                    if math.hypot(point[0] - nearest_x, point[1] - nearest_y) < 1.0e-6:
+                        return True
+            return False
+
+        self.assertTrue(all(lies_on_path(point) for point in targets))
 
 
 if __name__ == "__main__":
