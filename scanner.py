@@ -806,7 +806,7 @@ class Scanner:
                 cmd = "M109 S" + str(self.extruder_target)
                 self.gcode.run_script_from_command(cmd)
 
-    def run_touch_probe(self, gcmd, sample_count=None, next_xy=None):
+    def run_touch_probe(self, gcmd, sample_count=None, next_xy=None, next_speed=None):
         speed = gcmd.get_float(
             "PROBE_SPEED", self.scanner_touch_config["speed"], above=0.0
         )
@@ -866,7 +866,20 @@ class Scanner:
                     self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
                 elif len(positions) == sample_count:
                     retract_xy = probexy if next_xy is None else next_xy
-                    self._move(retract_xy + [pos[2] + sample_retract_dist], lift_speed)
+                    retract_speed = lift_speed
+                    if next_xy is not None and next_speed is not None:
+                        xy_distance = math.hypot(
+                            next_xy[0] - probexy[0], next_xy[1] - probexy[1]
+                        )
+                        if sample_retract_dist > 0:
+                            move_distance = math.hypot(xy_distance, sample_retract_dist)
+                            safe_speed = lift_speed * move_distance / sample_retract_dist
+                            retract_speed = min(next_speed, safe_speed)
+                        else:
+                            retract_speed = next_speed
+                    self._move(
+                        retract_xy + [pos[2] + sample_retract_dist], retract_speed
+                    )
                     self.toolhead.dwell(1.0)
         finally:
             self.set_accel(max_accel)
@@ -3669,7 +3682,9 @@ class ScannerMeshHelper:
                         next_xy = [self.min_x, y + touch_step_y]
                     else:
                         next_xy = None
-                    row.append(self.scanner.run_touch_probe(gcmd, 1, next_xy)[2])
+                    row.append(
+                        self.scanner.run_touch_probe(gcmd, 1, next_xy, speed)[2]
+                    )
                     scanner_row.append(scanner_value)
                     touch_points.append((xi, yi, x, y))
                 touch_matrix.append(row)
@@ -3716,7 +3731,7 @@ class ScannerMeshHelper:
                     else None
                 )
                 touch_matrix[yi][xi] = self.scanner.run_touch_probe(
-                    gcmd, self.touch_samples, next_xy
+                    gcmd, self.touch_samples, next_xy, speed
                 )[2]
         finally:
             self.scanner.trigger_method = original_trigger_method
