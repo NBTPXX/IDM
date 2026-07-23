@@ -4,6 +4,7 @@ from scanner_touch_mesh import (
     COMPENSATION_SECTION,
     CompensationProfile,
     difference_matrix,
+    interpolate_matrix,
     matrix_range,
 )
 
@@ -94,6 +95,18 @@ class CompensationProfileTest(unittest.TestCase):
     def test_difference_matrix_rejects_dimension_mismatch(self):
         with self.assertRaisesRegex(ValueError, "dimensions"):
             difference_matrix([[1, 2]], [[1], [2]])
+
+    def test_interpolation_preserves_linear_scanner_surface(self):
+        matrix = [[0.0, 1.0], [1.0, 2.0]]
+
+        value = interpolate_matrix(matrix, 0, 10, 0, 10, 2, 2, 2.5, 7.5)
+
+        self.assertAlmostEqual(value, 1.0)
+
+    def test_interpolation_returns_none_outside_mesh(self):
+        matrix = [[0.0, 1.0], [1.0, 2.0]]
+
+        self.assertIsNone(interpolate_matrix(matrix, 0, 10, 0, 10, 2, 2, -0.1, 5))
 
 
 if __name__ == "__main__":
