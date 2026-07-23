@@ -3,6 +3,13 @@
 KDIR="${HOME}/klipper"
 KENV="${HOME}/klippy-env"
 
+if [ ! -d "$KDIR" ] && [ -d "/data/klipper" ]; then
+    KDIR="/data/klipper"
+fi
+if [ ! -d "$KENV" ] && [ -d "/data/klippy-env" ]; then
+    KENV="/data/klippy-env"
+fi
+
 BKDIR="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 
 if [ ! -d "$KDIR" ] || [ ! -d "$KENV" ]; then

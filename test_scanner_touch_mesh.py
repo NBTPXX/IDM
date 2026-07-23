@@ -4,6 +4,7 @@ from scanner_touch_mesh import (
     COMPENSATION_SECTION,
     CompensationProfile,
     align_matrices_at_center,
+    arc_retract_segments,
     apply_compensation,
     difference_matrix,
     interpolate_matrix,
@@ -142,6 +143,27 @@ class CompensationProfileTest(unittest.TestCase):
         )
 
         self.assertEqual(difference_matrix(centered_touch, centered_scanner), [[0, 0], [0, 0]])
+
+    def test_arc_retract_limits_radius_and_ends_with_travel_speed(self):
+        segments = arc_retract_segments([0, 0], 0, [20, 0], 5, 5, 50)
+        arc_end, arc_speed = segments[-2]
+
+        self.assertAlmostEqual(arc_end[0], 5.0)
+        self.assertEqual(arc_end[1:], [0.0, 5.0])
+        self.assertEqual(segments[-1], ([20, 0, 5], 50))
+        previous = segments[-3][0]
+        xy_delta = arc_end[0] - previous[0]
+        z_delta = arc_end[2] - previous[2]
+        segment_distance = (xy_delta**2 + z_delta**2) ** 0.5
+        self.assertAlmostEqual(arc_speed * z_delta / segment_distance, 5.0)
+        self.assertAlmostEqual(arc_speed * xy_delta / segment_distance, 50.0)
+
+    def test_arc_retract_uses_horizontal_distance_as_short_radius_limit(self):
+        segments = arc_retract_segments([0, 0], 0, [3, 0], 5, 5, 50)
+
+        self.assertAlmostEqual(segments[-2][0][0], 3.0)
+        self.assertEqual(segments[-2][0][1:], [0.0, 3.0])
+        self.assertEqual(segments[-1], ([3, 0, 5], 5))
 
 
 if __name__ == "__main__":

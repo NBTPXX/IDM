@@ -37,6 +37,7 @@ from .scanner_touch_mesh import (
     COMPENSATION_SECTION,
     CompensationProfile,
     align_matrices_at_center,
+    arc_retract_segments,
     apply_compensation,
     difference_matrix,
     interpolate_matrix,
@@ -865,21 +866,21 @@ class Scanner:
                 if len(positions) < sample_count:
                     self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
                 elif len(positions) == sample_count:
-                    retract_xy = probexy if next_xy is None else next_xy
-                    retract_speed = lift_speed
                     if next_xy is not None and next_speed is not None:
-                        xy_distance = math.hypot(
-                            next_xy[0] - probexy[0], next_xy[1] - probexy[1]
+                        for target, move_speed in arc_retract_segments(
+                            probexy,
+                            pos[2],
+                            next_xy,
+                            sample_retract_dist,
+                            lift_speed,
+                            next_speed,
+                        ):
+                            self._move(target, move_speed)
+                    else:
+                        self._move(
+                            probexy + [pos[2] + sample_retract_dist], lift_speed
                         )
-                        if sample_retract_dist > 0:
-                            move_distance = math.hypot(xy_distance, sample_retract_dist)
-                            safe_speed = lift_speed * move_distance / sample_retract_dist
-                            retract_speed = min(next_speed, safe_speed)
-                        else:
-                            retract_speed = next_speed
-                    self._move(
-                        retract_xy + [pos[2] + sample_retract_dist], retract_speed
-                    )
+                if len(positions) < sample_count or next_xy is None:
                     self.toolhead.dwell(1.0)
         finally:
             self.set_accel(max_accel)

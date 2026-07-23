@@ -1,5 +1,7 @@
 """Persistent data model for Scanner Touch mesh compensation."""
 
+import math
+
 COMPENSATION_SECTION = "scanner touch_mesh_compensation"
 COMPENSATION_VERSION = 1
 
@@ -185,3 +187,47 @@ def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
         [[value - center_a for value in row] for row in matrix_a],
         [[value - center_b for value in row] for row in matrix_b],
     )
+
+
+def arc_retract_segments(start_xy, start_z, next_xy, retract_height, lift_speed, travel_speed):
+    horizontal_distance = math.hypot(
+        next_xy[0] - start_xy[0], next_xy[1] - start_xy[1]
+    )
+    radius = min(retract_height, horizontal_distance)
+    if radius <= 0:
+        return [([next_xy[0], next_xy[1], start_z + retract_height], lift_speed)]
+
+    direction_x = (next_xy[0] - start_xy[0]) / horizontal_distance
+    direction_y = (next_xy[1] - start_xy[1]) / horizontal_distance
+    terminal_start = 2.0 * math.atan(travel_speed / lift_speed) - math.pi / 2.0
+    if terminal_start > 0:
+        base_count = max(1, int(math.ceil(terminal_start / (math.pi / 12.0))))
+        angles = [terminal_start * index / base_count for index in range(1, base_count + 1)]
+        angles.append(math.pi / 2.0)
+    else:
+        angles = [math.pi * index / 16.0 for index in range(1, 9)]
+    segments = []
+    previous_xy = start_xy
+    previous_z = start_z
+    for angle in angles:
+        offset = radius * (1.0 - math.cos(angle))
+        target_xy = [
+            start_xy[0] + direction_x * offset,
+            start_xy[1] + direction_y * offset,
+        ]
+        target_z = start_z + radius * math.sin(angle)
+        xy_delta = math.hypot(
+            target_xy[0] - previous_xy[0], target_xy[1] - previous_xy[1]
+        )
+        z_delta = target_z - previous_z
+        segment_distance = math.hypot(xy_delta, z_delta)
+        speed = lift_speed * segment_distance / z_delta if z_delta else travel_speed
+        segments.append(([target_xy[0], target_xy[1], target_z], speed))
+        previous_xy = target_xy
+        previous_z = target_z
+
+    if retract_height > radius:
+        segments.append(([next_xy[0], next_xy[1], start_z + retract_height], lift_speed))
+    elif horizontal_distance > radius:
+        segments.append(([next_xy[0], next_xy[1], start_z + retract_height], travel_speed))
+    return segments
