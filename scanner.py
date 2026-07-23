@@ -43,6 +43,10 @@ from .scanner_touch_mesh import (
     interpolate_matrix,
     matrix_range,
     needs_touch_retry,
+    fill_round_mesh_edges,
+    mesh_probe_indices,
+    rounded_layer_mesh_trajectory,
+    round_mesh_row_indices,
 )
 from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
@@ -3314,8 +3318,6 @@ class ScannerMeshHelper:
     def create(cls, scanner, config):
         if config.has_section("bed_mesh"):
             mesh_config = config.getsection("bed_mesh")
-            if mesh_config.get("mesh_radius", None) is not None:
-                return None  # Use normal bed meshing for round beds
             return ScannerMeshHelper(scanner, config, mesh_config)
         else:
             return None
@@ -3331,15 +3333,33 @@ class ScannerMeshHelper:
             raise config.error("Invalid Touch Mesh compensation: %s" % (error,))
 
         self.speed = mesh_config.getfloat("speed", 50.0, above=0.0, note_valid=False)
-        self.def_min_x, self.def_min_y = mesh_config.getfloatlist(
-            "mesh_min", count=2, note_valid=False
-        )
-        self.def_max_x, self.def_max_y = mesh_config.getfloatlist(
-            "mesh_max", count=2, note_valid=False
-        )
-        self.def_res_x, self.def_res_y = mesh_config.getintlist(
-            "probe_count", count=2, note_valid=False
-        )
+        self.is_round = mesh_config.get("mesh_radius", None) is not None
+        if self.is_round:
+            self.def_radius = mesh_config.getfloat("mesh_radius", above=0, note_valid=False)
+            self.def_origin_x, self.def_origin_y = mesh_config.getfloatlist(
+                "mesh_origin", [0.0, 0.0], count=2, note_valid=False
+            )
+            self.def_round_count = mesh_config.getint(
+                "round_probe_count", 5, minval=3, note_valid=False
+            )
+            if self.def_round_count % 2 == 0:
+                raise config.error("round_probe_count must be an odd number")
+            self.def_min_x = self.def_origin_x - self.def_radius
+            self.def_max_x = self.def_origin_x + self.def_radius
+            self.def_min_y = self.def_origin_y - self.def_radius
+            self.def_max_y = self.def_origin_y + self.def_radius
+            self.def_res_x = self.def_round_count
+            self.def_res_y = self.def_round_count
+        else:
+            self.def_min_x, self.def_min_y = mesh_config.getfloatlist(
+                "mesh_min", count=2, note_valid=False
+            )
+            self.def_max_x, self.def_max_y = mesh_config.getfloatlist(
+                "mesh_max", count=2, note_valid=False
+            )
+            self.def_res_x, self.def_res_y = mesh_config.getintlist(
+                "probe_count", count=2, note_valid=False
+            )
         self.rri = mesh_config.getint(
             "relative_reference_index", None, note_valid=False
         )
@@ -3360,9 +3380,18 @@ class ScannerMeshHelper:
         )
         if self.touch_res_x < 2 or self.touch_res_y < 2:
             raise config.error("touch_mesh_probe_count requires at least two points per axis")
+        if self.is_round and (
+            self.touch_res_x != self.touch_res_y or self.touch_res_x % 2 == 0
+        ):
+            raise config.error(
+                "circular touch_mesh_probe_count must use matching odd counts"
+            )
         self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
         self.touch_retry_threshold = config.getfloat(
             "touch_mesh_retry_threshold", 0.05, minval=0
+        )
+        self.round_mesh_center_dwell = config.getfloat(
+            "round_mesh_center_dwell", 0.25, minval=0
         )
         self.adaptive_margin = mesh_config.getfloat(
             "adaptive_margin", 0, note_valid=False
@@ -3458,6 +3487,16 @@ class ScannerMeshHelper:
     def _generate_path(self):
         xo = self.scanner.offset["x"]
         yo = self.scanner.offset["y"]
+        if self.is_round:
+            points = [
+                (x - xo, y - yo)
+                for x, y in rounded_layer_mesh_trajectory(
+                    (self.origin_x, self.origin_y), self.radius, self.res_x
+                )
+            ]
+            self.round_center_motion = (self.origin_x - xo, self.origin_y - yo)
+            return points
+
         settings = {
             "x": {
                 "range_aligned": [self.min_x - xo, self.max_x - xo],
@@ -3530,30 +3569,50 @@ class ScannerMeshHelper:
         return points
 
     def calibrate(self, gcmd, apply_mesh=True):
-        self.min_x, self.min_y = coord_fallback(
-            gcmd,
-            "MESH_MIN",
-            convert_float,
-            self.def_min_x,
-            self.def_min_y,
-            lambda v, d: max(v, d),
-        )
-        self.max_x, self.max_y = coord_fallback(
-            gcmd,
-            "MESH_MAX",
-            convert_float,
-            self.def_max_x,
-            self.def_max_y,
-            lambda v, d: min(v, d),
-        )
-        self.res_x, self.res_y = coord_fallback(
-            gcmd,
-            "PROBE_COUNT",
-            int,
-            self.def_res_x,
-            self.def_res_y,
-            lambda v, _d: max(v, 3),
-        )
+        if self.is_round:
+            self.radius = gcmd.get_float("MESH_RADIUS", self.def_radius, above=0)
+            self.origin_x, self.origin_y = coord_fallback(
+                gcmd,
+                "MESH_ORIGIN",
+                convert_float,
+                self.def_origin_x,
+                self.def_origin_y,
+                lambda v, _d: v,
+            )
+            self.res_x = self.res_y = gcmd.get_int(
+                "ROUND_PROBE_COUNT", self.def_round_count, minval=3
+            )
+            if self.res_x % 2 == 0:
+                raise gcmd.error("ROUND_PROBE_COUNT must be an odd number")
+            self.min_x = self.origin_x - self.radius
+            self.max_x = self.origin_x + self.radius
+            self.min_y = self.origin_y - self.radius
+            self.max_y = self.origin_y + self.radius
+        else:
+            self.min_x, self.min_y = coord_fallback(
+                gcmd,
+                "MESH_MIN",
+                convert_float,
+                self.def_min_x,
+                self.def_min_y,
+                lambda v, d: max(v, d),
+            )
+            self.max_x, self.max_y = coord_fallback(
+                gcmd,
+                "MESH_MAX",
+                convert_float,
+                self.def_max_x,
+                self.def_max_y,
+                lambda v, d: min(v, d),
+            )
+            self.res_x, self.res_y = coord_fallback(
+                gcmd,
+                "PROBE_COUNT",
+                int,
+                self.def_res_x,
+                self.def_res_y,
+                lambda v, _d: max(v, 3),
+            )
         self.profile_name = gcmd.get("PROFILE", "default")
 
         if self.min_x > self.max_x:
@@ -3582,7 +3641,7 @@ class ScannerMeshHelper:
             self.zero_ref_mode = None
 
         # If the user requested adaptive meshing, try to shrink the values we just configured
-        if gcmd.get_int("ADAPTIVE", 0):
+        if gcmd.get_int("ADAPTIVE", 0) and not self.is_round:
             if self.exclude_object is not None:
                 margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
                 self._shrink_to_excluded_objects(gcmd, margin)
@@ -3590,6 +3649,8 @@ class ScannerMeshHelper:
                 gcmd.respond_info(
                     "Requested adaptive mesh, but [exclude_object] is not enabled. Ignoring."
                 )
+        elif gcmd.get_int("ADAPTIVE", 0):
+            gcmd.respond_info("Adaptive mesh is unavailable for circular Scanner meshes.")
 
         self.step_x = (self.max_x - self.min_x) / (self.res_x - 1)
         self.step_y = (self.max_y - self.min_y) / (self.res_y - 1)
@@ -3645,52 +3706,76 @@ class ScannerMeshHelper:
         original_trigger_method = self.scanner.trigger_method
         max_accel = toolhead.get_status(self.scanner.reactor.monotonic())["max_accel"]
         speed = gcmd.get_float("SPEED", self.speed, above=0.0)
-        touch_matrix = []
-        scanner_at_touch = []
-        touch_points = []
+        touch_matrix = [[None] * self.touch_res_x for _ in range(self.touch_res_y)]
+        scanner_at_touch = [[None] * self.touch_res_x for _ in range(self.touch_res_y)]
         touch_step_x = (self.max_x - self.min_x) / (self.touch_res_x - 1)
         touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
+        touch_indices = (
+            mesh_probe_indices(self.touch_res_x, self.touch_res_y, circular=True)
+            if self.is_round
+            else [
+                (xi, yi)
+                for yi in range(self.touch_res_y)
+                for xi in range(self.touch_res_x)
+            ]
+        )
+        touch_points = [
+            (
+                xi,
+                yi,
+                self.min_x + xi * touch_step_x,
+                self.min_y + yi * touch_step_y,
+            )
+            for xi, yi in touch_indices
+        ]
         try:
             self.scanner.check_temp(gcmd)
             self.scanner.trigger_method = 1
-            for yi in range(self.touch_res_y):
-                row = []
-                scanner_row = []
-                y = self.min_y + yi * touch_step_y
-                for xi in range(self.touch_res_x):
-                    x = self.min_x + xi * touch_step_x
-                    if xi == 0 and yi == 0:
-                        self.scanner._zhop()
-                        toolhead.manual_move([x, y, None], speed)
-                    toolhead.wait_moves()
-                    scanner_value = interpolate_matrix(
-                        scanner_matrix,
-                        self.min_x,
-                        self.max_x,
-                        self.min_y,
-                        self.max_y,
-                        self.res_x,
-                        self.res_y,
-                        x,
-                        y,
-                    )
-                    if scanner_value is None:
-                        raise gcmd.error("Touch mesh coordinate is outside Scanner mesh")
-                    # run_touch_probe restores scan mode after every point.
-                    self.scanner.trigger_method = 1
-                    if xi + 1 < self.touch_res_x:
-                        next_xy = [x + touch_step_x, y]
-                    elif yi + 1 < self.touch_res_y:
-                        next_xy = [self.min_x, y + touch_step_y]
-                    else:
-                        next_xy = None
-                    row.append(
-                        self.scanner.run_touch_probe(gcmd, 1, next_xy, speed)[2]
-                    )
-                    scanner_row.append(scanner_value)
-                    touch_points.append((xi, yi, x, y))
-                touch_matrix.append(row)
-                scanner_at_touch.append(scanner_row)
+            for point_index, (xi, yi, x, y) in enumerate(touch_points):
+                if point_index == 0:
+                    self.scanner._zhop()
+                    toolhead.manual_move([x, y, None], speed)
+                toolhead.wait_moves()
+                scanner_value = interpolate_matrix(
+                    scanner_matrix,
+                    self.min_x,
+                    self.max_x,
+                    self.min_y,
+                    self.max_y,
+                    self.res_x,
+                    self.res_y,
+                    x,
+                    y,
+                )
+                if scanner_value is None:
+                    raise gcmd.error("Touch mesh coordinate is outside Scanner mesh")
+                # run_touch_probe restores scan mode after every point.
+                self.scanner.trigger_method = 1
+                next_xy = (
+                    list(touch_points[point_index + 1][2:4])
+                    if point_index + 1 < len(touch_points)
+                    else None
+                )
+                touch_matrix[yi][xi] = self.scanner.run_touch_probe(
+                    gcmd, 1, next_xy, speed
+                )[2]
+                scanner_at_touch[yi][xi] = scanner_value
+
+            if self.is_round:
+                touch_matrix = fill_round_mesh_edges(
+                    touch_matrix,
+                    [
+                        round_mesh_row_indices(self.touch_res_x, yi)
+                        for yi in range(self.touch_res_y)
+                    ],
+                )
+                scanner_at_touch = fill_round_mesh_edges(
+                    scanner_at_touch,
+                    [
+                        round_mesh_row_indices(self.touch_res_x, yi)
+                        for yi in range(self.touch_res_y)
+                    ],
+                )
 
             aligned_touch, aligned_scanner = align_matrices_at_center(
                 touch_matrix,
@@ -3734,7 +3819,10 @@ class ScannerMeshHelper:
                     else None
                 )
                 touch_matrix[yi][xi] = self.scanner.run_touch_probe(
-                    gcmd, self.touch_samples, next_xy, speed
+                    gcmd,
+                    self.touch_samples,
+                    next_xy,
+                    speed,
                 )[2]
         finally:
             self.scanner.trigger_method = original_trigger_method
@@ -3844,6 +3932,10 @@ class ScannerMeshHelper:
             p = path if i % 2 == 0 else reversed(path)
             for (x, y) in p:
                 self.toolhead.manual_move([x, y, None], speed)
+                if self.is_round and math.hypot(
+                    x - self.round_center_motion[0], y - self.round_center_motion[1]
+                ) <= 1.0e-6:
+                    self.toolhead.dwell(self.round_mesh_center_dwell)
             self.toolhead.dwell(0.251)
         self.toolhead.wait_moves()
 
@@ -3854,8 +3946,22 @@ class ScannerMeshHelper:
         (dist, _samples) = self.scanner._sample(50, 10)
         self.zero_ref_val = dist
 
+    def _round_row_indices(self, row_index, count=None):
+        return round_mesh_row_indices(count or self.res_x, row_index)
+
+    def _is_round_position(self, x, y):
+        return math.hypot(x - self.origin_x, y - self.origin_y) <= self.radius + 1.0e-9
+
+    def _fill_round_mesh_edges(self, matrix):
+        if not self.is_round:
+            return matrix
+        return fill_round_mesh_edges(
+            matrix, [self._round_row_indices(yi) for yi in range(self.res_y)]
+        )
+
     def _is_valid_position(self, x, y):
-        return self.min_x <= x <= self.max_x and self.min_y <= y <= self.min_y
+        within_bounds = self.min_x <= x <= self.max_x and self.min_y <= y <= self.max_y
+        return within_bounds and (not self.is_round or self._is_round_position(x, y))
 
     def _is_faulty_coordinate(self, x, y, add_offsets=False):
         if add_offsets:
@@ -3991,6 +4097,7 @@ class ScannerMeshHelper:
             matrix = self._interpolate_faulty(
                 matrix, faulty_regions, interpolator_or_msg
             )
+        matrix = self._fill_round_mesh_edges(matrix)
         err = self._check_matrix(matrix)
         if err is not None:
             return (True, err)
@@ -4016,7 +4123,7 @@ class ScannerMeshHelper:
 
     def _generate_matrix(self, raw_clusters, mask):
         faulty_indexes = []
-        matrix = np.empty((self.res_y, self.res_x))
+        matrix = np.full((self.res_y, self.res_x), np.nan)
         for (x, y), values in raw_clusters.items():
             if mask is None or mask[(y, x)]:
                 matrix[(y, x)] = self.scanner.trigger_distance - median(values)
@@ -4069,6 +4176,8 @@ class ScannerMeshHelper:
                 if np.isnan(matrix[(yi, xi)]):
                     xc = xi * self.step_x + self.min_x
                     yc = yi * self.step_y + self.min_y
+                    if self.is_round and not self._is_round_position(xc, yc):
+                        continue
                     empty_clusters.append("  (%.3f,%.3f)[%d,%d]" % (xc, yc, xi, yi))
         if empty_clusters:
             err = (

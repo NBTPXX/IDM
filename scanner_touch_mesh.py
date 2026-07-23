@@ -130,6 +130,454 @@ def needs_touch_retry(touch_value, scanner_value, threshold):
     return abs(touch_value - scanner_value) - threshold > 1.0e-9
 
 
+def round_mesh_row_indices(count, row_index):
+    """Return the X indices inside Klipper's square-sampled circular mesh."""
+    if count < 3 or count % 2 == 0:
+        raise ValueError("round mesh count must be an odd integer of at least three")
+    center = count // 2
+    y = row_index - center
+    return [
+        x_index
+        for x_index in range(count)
+        if math.hypot(x_index - center, y) <= center + 1.0e-9
+    ]
+
+
+def mesh_probe_indices(x_count, y_count, circular=False):
+    """Return Klipper's bottom-to-top serpentine mesh probe order."""
+    if circular and x_count != y_count:
+        raise ValueError("circular mesh requires matching X and Y counts")
+    points = []
+    for y_index in range(y_count):
+        x_indices = (
+            round_mesh_row_indices(x_count, y_index)
+            if circular
+            else list(range(x_count))
+        )
+        if y_index % 2:
+            x_indices.reverse()
+        points.extend((x_index, y_index) for x_index in x_indices)
+    return points
+
+
+def round_lattice_orbits(count):
+    """Return outer-to-inner four-point rotation orbits for a round mesh."""
+    if count < 3 or count % 2 == 0:
+        raise ValueError("round mesh count must be an odd integer of at least three")
+    center = count // 2
+    remaining = {
+        (x - center, y - center)
+        for y in range(count)
+        for x in range(count)
+        if (x != center or y != center)
+        and math.hypot(x - center, y - center) <= center + 1.0e-9
+    }
+    orbits = []
+    while remaining:
+        point = next(iter(remaining))
+        orbit = []
+        current = point
+        for _ in range(4):
+            orbit.append(current)
+            current = (-current[1], current[0])
+        orbit_set = set(orbit)
+        remaining.difference_update(orbit_set)
+        start = max(orbit, key=lambda value: (value[0], -value[1]))
+        start_index = orbit.index(start)
+        orbits.append(tuple(orbit[start_index:] + orbit[:start_index]))
+    return sorted(orbits, key=lambda orbit: math.hypot(*orbit[0]), reverse=True)
+
+
+def centered_matrix_extent(points):
+    """Return the half extent when points form a complete centered square."""
+    if not points:
+        return None
+    extent = max(max(abs(x), abs(y)) for x, y in points)
+    expected = {
+        (x, y)
+        for y in range(-extent, extent + 1)
+        for x in range(-extent, extent + 1)
+    }
+    return extent if points == expected else None
+
+
+def round_lattice_layers(count):
+    """Peel outer X/Y boundary points until the remainder is a square matrix."""
+    if count < 3 or count % 2 == 0:
+        raise ValueError("round mesh count must be an odd integer of at least three")
+    center = count // 2
+    remaining = {
+        (x - center, y - center)
+        for y in range(count)
+        for x in range(count)
+        if math.hypot(x - center, y - center) <= center + 1.0e-9
+    }
+    layers = []
+    while centered_matrix_extent(remaining) is None:
+        outer_extent = max(max(abs(x), abs(y)) for x, y in remaining)
+        layer = {
+            point
+            for point in remaining
+            if max(abs(point[0]), abs(point[1])) == outer_extent
+        }
+        layers.append(layer)
+        remaining.difference_update(layer)
+    return layers, remaining
+
+
+def arc_polyline(center, radius, start_angle, sweep_angle, max_sagitta=0.1):
+    """Approximate a circular arc while bounding the chord sagitta error."""
+    if radius <= 0:
+        return [(center[0], center[1])]
+    max_angle = 2.0 * math.acos(max(0.0, 1.0 - max_sagitta / radius))
+    segments = max(1, int(math.ceil(abs(sweep_angle) / max_angle)))
+    return [
+        (
+            center[0] + radius * math.cos(start_angle + sweep_angle * index / segments),
+            center[1] + radius * math.sin(start_angle + sweep_angle * index / segments),
+        )
+        for index in range(segments + 1)
+    ]
+
+
+def rounded_square_path(origin, half_extent, side_half, max_radius, max_sagitta=0.1):
+    """Return a closed rounded-square path contained by the bed circle."""
+    outer_radius = math.hypot(half_extent, side_half)
+    if outer_radius > max_radius + 1.0e-9:
+        raise ValueError("rounded square exceeds the configured bed radius")
+
+    def rotate(point, turns):
+        x, y = point
+        for _ in range(turns):
+            x, y = -y, x
+        return (origin[0] + x, origin[1] + y)
+
+    def append_arc(points, center, radius, start, end):
+        sweep = (end - start) % (2.0 * math.pi)
+        points.extend(arc_polyline(center, radius, start, sweep, max_sagitta)[1:])
+
+    def corner_path():
+        if side_half <= 1.0e-9 or max_radius - half_extent <= 1.0e-9:
+            angle = math.atan2(side_half, half_extent)
+            return arc_polyline(
+                (0.0, 0.0),
+                outer_radius,
+                angle,
+                math.pi / 2.0 - 2.0 * angle,
+                max_sagitta,
+            )[1:]
+
+        transition_radius = (
+            max_radius * max_radius - half_extent * half_extent - side_half * side_half
+        ) / (2.0 * (max_radius - half_extent))
+        if transition_radius <= 1.0e-9:
+            raise ValueError("unable to create a contained tangent corner")
+        first_center = (half_extent - transition_radius, side_half)
+        second_center = (side_half, half_extent - transition_radius)
+        first_distance = math.hypot(*first_center)
+        second_distance = math.hypot(*second_center)
+        first_contact = (
+            first_center[0] * max_radius / first_distance,
+            first_center[1] * max_radius / first_distance,
+        )
+        second_contact = (
+            second_center[0] * max_radius / second_distance,
+            second_center[1] * max_radius / second_distance,
+        )
+        points = []
+        append_arc(
+            points,
+            first_center,
+            transition_radius,
+            0.0,
+            math.atan2(first_contact[1] - first_center[1], first_contact[0] - first_center[0]),
+        )
+        append_arc(
+            points,
+            (0.0, 0.0),
+            max_radius,
+            math.atan2(first_contact[1], first_contact[0]),
+            math.atan2(second_contact[1], second_contact[0]),
+        )
+        append_arc(
+            points,
+            second_center,
+            transition_radius,
+            math.atan2(second_contact[1] - second_center[1], second_contact[0] - second_center[0]),
+            math.pi / 2.0,
+        )
+        return points
+
+    points = [(origin[0] + half_extent, origin[1] - side_half)]
+    points.append((origin[0] + half_extent, origin[1] + side_half))
+    side_endpoints = [
+        (-side_half, half_extent),
+        (-half_extent, -side_half),
+        (side_half, -half_extent),
+    ]
+    base_corner = corner_path()
+    for index in range(4):
+        points.extend(rotate(point, index) for point in base_corner)
+        if index < len(side_endpoints):
+            points.append(rotate(side_endpoints[index], 0))
+    return points
+
+
+def rounded_matrix_trajectory(origin, matrix_extent, step, max_radius, max_sagitta=0.1):
+    """Build the rounded overscan serpentine used by rectangular Scanner meshes."""
+    if matrix_extent == 0:
+        return [origin]
+
+    bound = matrix_extent * step
+
+    def build_path(overscan):
+        corner_radius = min(step / 2.0, overscan)
+        points = []
+        for row in range(matrix_extent * 2 + 1):
+            y = -bound + row * step
+            even = row % 2 == 0
+            start = (-bound, y) if even else (bound, y)
+            end = (bound, y) if even else (-bound, y)
+            if row and corner_radius > 0:
+                previous_y = y - step
+                if even:
+                    center_x = -bound - overscan + corner_radius
+                    arcs = [
+                        ((center_x, previous_y + corner_radius), -math.pi / 2.0, -math.pi / 2.0),
+                        ((center_x, y - corner_radius), math.pi, -math.pi / 2.0),
+                    ]
+                else:
+                    center_x = bound + overscan - corner_radius
+                    arcs = [
+                        ((center_x, previous_y + corner_radius), -math.pi / 2.0, math.pi / 2.0),
+                        ((center_x, y - corner_radius), 0.0, math.pi / 2.0),
+                    ]
+                for center, angle, sweep in arcs:
+                    points.extend(
+                        arc_polyline(
+                            (origin[0] + center[0], origin[1] + center[1]),
+                            corner_radius,
+                            angle,
+                            sweep,
+                            max_sagitta,
+                        )
+                    )
+            points.append((origin[0] + start[0], origin[1] + start[1]))
+            points.append((origin[0] + end[0], origin[1] + end[1]))
+        return points
+
+    maximum_overscan = step / 2.0
+    path = build_path(maximum_overscan)
+    if all(
+        math.hypot(x - origin[0], y - origin[1]) <= max_radius + 1.0e-9
+        for x, y in path
+    ):
+        return path
+    lower, upper = 0.0, maximum_overscan
+    for _ in range(32):
+        middle = (lower + upper) / 2.0
+        path = build_path(middle)
+        if all(
+            math.hypot(x - origin[0], y - origin[1]) <= max_radius + 1.0e-9
+            for x, y in path
+        ):
+            lower = middle
+        else:
+            upper = middle
+    return build_path(lower)
+
+
+def rounded_layer_mesh_trajectory(origin, radius, count, max_sagitta=0.1):
+    """Scan outer X/Y layers, then finish the remaining centered square matrix."""
+    center = count // 2
+    step = radius / center
+    layers, matrix_points = round_lattice_layers(count)
+    trajectory = []
+    for layer in layers:
+        max_component = max(max(abs(x), abs(y)) for x, y in layer)
+        side_half = max(min(abs(x), abs(y)) for x, y in layer)
+        trajectory.extend(
+            rounded_square_path(
+                origin,
+                max_component * step,
+                side_half * step,
+                radius,
+                max_sagitta,
+            )
+        )
+    matrix_extent = centered_matrix_extent(matrix_points)
+    trajectory.extend(
+        rounded_matrix_trajectory(
+            origin,
+            matrix_extent,
+            step,
+            radius,
+            max_sagitta,
+        )
+    )
+    return trajectory
+
+
+def tangent_connector_polyline(start, start_tangent, end, end_tangent, segments=12):
+    """Approximate a cubic curve that is tangent to both adjacent arcs."""
+    distance = math.hypot(end[0] - start[0], end[1] - start[1])
+    handle = distance / 3.0
+    control_a = (start[0] + start_tangent[0] * handle, start[1] + start_tangent[1] * handle)
+    control_b = (end[0] - end_tangent[0] * handle, end[1] - end_tangent[1] * handle)
+    return [
+        (
+            (1 - t) ** 3 * start[0]
+            + 3 * (1 - t) ** 2 * t * control_a[0]
+            + 3 * (1 - t) * t**2 * control_b[0]
+            + t**3 * end[0],
+            (1 - t) ** 3 * start[1]
+            + 3 * (1 - t) ** 2 * t * control_a[1]
+            + 3 * (1 - t) * t**2 * control_b[1]
+            + t**3 * end[1],
+        )
+        for t in (index / segments for index in range(segments + 1))
+    ]
+
+
+def nearest_orbit_point_in_direction(points, previous_angle, direction):
+    """Choose the next target with the smallest angular advance."""
+    if direction not in (-1, 1):
+        raise ValueError("direction must be -1 or 1")
+    angles = [math.atan2(point[1], point[0]) for point in points]
+    advances = [
+        (angle - previous_angle) % (2.0 * math.pi)
+        if direction > 0
+        else (previous_angle - angle) % (2.0 * math.pi)
+        for angle in angles
+    ]
+    return min(range(len(points)), key=lambda index: advances[index])
+
+
+def round_mesh_trajectory(origin, radius, count, max_sagitta=0.1, direction=1):
+    """Build an outer-to-center, 270-degree-per-orbit round mesh path."""
+    if direction not in (-1, 1):
+        raise ValueError("direction must be -1 or 1")
+    center = count // 2
+    step = radius / center
+    trajectory = []
+    travel_direction = direction
+    orbits = [
+        [
+            (origin[0] + dx * step, origin[1] + dy * step)
+            for dx, dy in orbit
+        ]
+        for orbit in round_lattice_orbits(count)
+    ]
+    start_point = orbits[0][0]
+    for orbit_index, points in enumerate(orbits):
+        start_angle = math.atan2(
+            start_point[1] - origin[1], start_point[0] - origin[0]
+        )
+        orbit_radius = math.hypot(
+            start_point[0] - origin[0], start_point[1] - origin[1]
+        )
+        for point_index in range(3):
+            angle = start_angle + travel_direction * point_index * math.pi / 2.0
+            arc = arc_polyline(
+                origin,
+                orbit_radius,
+                angle,
+                travel_direction * math.pi / 2.0,
+                max_sagitta,
+            )
+            trajectory.extend(arc[1 if trajectory else 0 :])
+        end_angle = start_angle + travel_direction * 3.0 * math.pi / 2.0
+        if orbit_index + 1 < len(orbits):
+            next_points = orbits[orbit_index + 1]
+            local_next_points = [
+                (point[0] - origin[0], point[1] - origin[1])
+                for point in next_points
+            ]
+            next_radius = math.hypot(*local_next_points[0])
+            if math.isclose(orbit_radius, next_radius, abs_tol=1.0e-9):
+                point_angles = [
+                    math.atan2(point[1], point[0]) for point in local_next_points
+                ]
+                point_advances = [
+                    (angle - end_angle) % (2.0 * math.pi)
+                    if travel_direction > 0
+                    else (end_angle - angle) % (2.0 * math.pi)
+                    for angle in point_angles
+                ]
+                next_index = min(range(4), key=lambda index: point_advances[index])
+                trajectory.extend(
+                    arc_polyline(
+                        origin,
+                        orbit_radius,
+                        end_angle,
+                        point_advances[next_index] * travel_direction,
+                        max_sagitta,
+                    )[1:]
+                )
+            else:
+                point_angles = [
+                    math.atan2(point[1], point[0]) for point in local_next_points
+                ]
+                point_advances = [
+                    (angle - end_angle) % (2.0 * math.pi)
+                    if travel_direction > 0
+                    else (end_angle - angle) % (2.0 * math.pi)
+                    for angle in point_angles
+                ]
+                next_index = min(range(4), key=lambda index: point_advances[index])
+                tangent_angle = point_angles[next_index]
+                extra_sweep = point_advances[next_index] * travel_direction
+                if abs(extra_sweep) > 1.0e-9:
+                    trajectory.extend(
+                        arc_polyline(
+                            origin, orbit_radius, end_angle, extra_sweep, max_sagitta
+                        )[1:]
+                    )
+                connector_radius = (orbit_radius - next_radius) / 2.0
+                connector_center_radius = (orbit_radius + next_radius) / 2.0
+                connector_center = (
+                    origin[0] + connector_center_radius * math.cos(tangent_angle),
+                    origin[1] + connector_center_radius * math.sin(tangent_angle),
+                )
+                trajectory.extend(
+                    arc_polyline(
+                        connector_center,
+                        connector_radius,
+                        tangent_angle,
+                        travel_direction * math.pi,
+                        max_sagitta,
+                    )[1:]
+                )
+                # A single circular connector reverses the tangent direction
+                # at its second contact with the next concentric ring.
+                travel_direction *= -1
+            start_point = next_points[next_index]
+
+    trajectory.append((origin[0], origin[1]))
+    return trajectory
+
+
+def fill_round_mesh_edges(matrix, valid_rows):
+    """Pad a circular mesh into Klipper's square matrix representation."""
+    filled = [list(row) for row in matrix]
+    for row, valid_indices in zip(filled, valid_rows):
+        if not valid_indices:
+            raise ValueError("round mesh row has no valid probe coordinates")
+        first, last = valid_indices[0], valid_indices[-1]
+        if (
+            row[first] is None
+            or row[last] is None
+            or not math.isfinite(row[first])
+            or not math.isfinite(row[last])
+        ):
+            raise ValueError("round mesh row is missing an edge measurement")
+        for index in range(first):
+            row[index] = row[first]
+        for index in range(last + 1, len(row)):
+            row[index] = row[last]
+    return filled
+
+
 def apply_compensation(profile, matrix, min_x, max_x, min_y, max_y):
     y_count = len(matrix)
     x_count = len(matrix[0]) if y_count else 0
