@@ -13,12 +13,12 @@
   - [x] 2.1 为网格归一化与差值矩阵编写单元测试；对应需求 1.3。
   - [x] 2.2 为任意相同尺寸矩阵验证“Scanner Matrix + Compensation Matrix = Touch Matrix”的性质测试；对应设计“Correctness Properties”。
 
-- [ ] 3. 在 Scanner 网格生成时应用保存的补偿
+- [x] 3. 在 Scanner 网格生成时应用保存的补偿
   - 实现 Compensation Matrix 的边界检查与双线性插值；对应需求 2.3、2.4、2.5。
   - 在 `BED_MESH_CALIBRATE METHOD=scanner` 路径中，生成原始 Scanner Mesh 后叠加补偿值；对应需求 2.3。
   - 输出覆盖范围外坐标并保留对应原始 Scanner 测量值；对应需求 2.4、2.5。
-  - [ ] 3.1 为网格内部、边界与覆盖范围外坐标编写双线性插值单元测试；对应需求 2.4、2.5。
-  - [ ] 3.2 为恒定补偿矩阵和线性梯度矩阵编写插值性质测试；对应设计“Correctness Properties”。
+  - [x] 3.1 为网格内部、边界与覆盖范围外坐标编写双线性插值单元测试；对应需求 2.4、2.5。
+  - [x] 3.2 为恒定补偿矩阵和线性梯度矩阵编写插值性质测试；对应设计“Correctness Properties”。
 
 - [ ] 4. 扩展 `BED_MESH_CALIBRATE` 接口并更新文档
   - 增加 `METHOD=touch_compensation` 和 `CLEAR=1`，保持现有非 Scanner 方法委托给原始 Bed Mesh 命令；对应需求 1.1、2.6。
