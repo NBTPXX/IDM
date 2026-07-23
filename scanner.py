@@ -3658,8 +3658,9 @@ class ScannerMeshHelper:
                 y = self.min_y + yi * touch_step_y
                 for xi in range(self.touch_res_x):
                     x = self.min_x + xi * touch_step_x
-                    self.scanner._zhop()
-                    toolhead.manual_move([x, y, None], speed)
+                    if xi == 0 and yi == 0:
+                        self.scanner._zhop()
+                        toolhead.manual_move([x, y, None], speed)
                     toolhead.wait_moves()
                     scanner_value = interpolate_matrix(
                         scanner_matrix,
@@ -3721,8 +3722,9 @@ class ScannerMeshHelper:
                 gcmd.respond_info("Touch mesh retry points: none")
 
             for retry_index, (xi, yi, x, y) in enumerate(retry_points):
-                self.scanner._zhop()
-                toolhead.manual_move([x, y, None], speed)
+                if retry_index == 0:
+                    self.scanner._zhop()
+                    toolhead.manual_move([x, y, None], speed)
                 toolhead.wait_moves()
                 self.scanner.trigger_method = 1
                 next_xy = (
