@@ -24,6 +24,8 @@ touch_mesh_retry_threshold: 0.05
 
 每次初始采样的 Probe 日志会显示 `samples=1`。系统会输出完整的 `Touch mesh retry points` 坐标列表；校准结束时只输出最终补偿矩阵和差值范围。
 
+Touch Mesh 在每个点最后一次样本的回抽过程中会同步移动到下一采样坐标。多样本 Probe 的中间回抽保持在当前坐标，确保后续样本使用同一个网格点。
+
 `SAVE_CONFIG` 会生成 `[scanner touch_mesh_compensation]` 段保存补偿矩阵。该段由系统管理，Klipper 启动时会将其识别为持久化补偿数据。
 
 后续 `BED_MESH_CALIBRATE METHOD=scanner` 会在生成原始 Scanner Mesh 后，对补偿覆盖范围内的每个坐标插值并叠加保存的补偿值。覆盖范围外坐标保留原始 Scanner 值，并在命令输出中列出。

@@ -806,7 +806,7 @@ class Scanner:
                 cmd = "M109 S" + str(self.extruder_target)
                 self.gcode.run_script_from_command(cmd)
 
-    def run_touch_probe(self, gcmd, sample_count=None):
+    def run_touch_probe(self, gcmd, sample_count=None, next_xy=None):
         speed = gcmd.get_float(
             "PROBE_SPEED", self.scanner_touch_config["speed"], above=0.0
         )
@@ -860,9 +860,13 @@ class Scanner:
                     gcmd.respond_info("Probe samples exceed tolerance. Retrying...")
                     retries += 1
                     positions = []
-                # Retract
-                if len(positions) <= sample_count:
+                # Retract to the current point between samples. The final
+                # retract can move toward the next Touch Mesh coordinate.
+                if len(positions) < sample_count:
                     self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
+                elif len(positions) == sample_count:
+                    retract_xy = probexy if next_xy is None else next_xy
+                    self._move(retract_xy + [pos[2] + sample_retract_dist], lift_speed)
                     self.toolhead.dwell(1.0)
         finally:
             self.set_accel(max_accel)
@@ -3659,7 +3663,13 @@ class ScannerMeshHelper:
                         raise gcmd.error("Touch mesh coordinate is outside Scanner mesh")
                     # run_touch_probe restores scan mode after every point.
                     self.scanner.trigger_method = 1
-                    row.append(self.scanner.run_touch_probe(gcmd, 1)[2])
+                    if xi + 1 < self.touch_res_x:
+                        next_xy = [x + touch_step_x, y]
+                    elif yi + 1 < self.touch_res_y:
+                        next_xy = [self.min_x, y + touch_step_y]
+                    else:
+                        next_xy = None
+                    row.append(self.scanner.run_touch_probe(gcmd, 1, next_xy)[2])
                     scanner_row.append(scanner_value)
                     touch_points.append((xi, yi, x, y))
                 touch_matrix.append(row)
@@ -3695,13 +3705,18 @@ class ScannerMeshHelper:
             else:
                 gcmd.respond_info("Touch mesh retry points: none")
 
-            for xi, yi, x, y in retry_points:
+            for retry_index, (xi, yi, x, y) in enumerate(retry_points):
                 self.scanner._zhop()
                 toolhead.manual_move([x, y, None], speed)
                 toolhead.wait_moves()
                 self.scanner.trigger_method = 1
+                next_xy = (
+                    list(retry_points[retry_index + 1][2:4])
+                    if retry_index + 1 < len(retry_points)
+                    else None
+                )
                 touch_matrix[yi][xi] = self.scanner.run_touch_probe(
-                    gcmd, self.touch_samples
+                    gcmd, self.touch_samples, next_xy
                 )[2]
         finally:
             self.scanner.trigger_method = original_trigger_method
