@@ -33,7 +33,12 @@ from . import bed_mesh
 from . import thermistor
 from . import adc_temperature
 from . import adxl345
-from .scanner_touch_mesh import CompensationProfile, difference_matrix, matrix_range
+from .scanner_touch_mesh import (
+    CompensationProfile,
+    difference_matrix,
+    interpolate_matrix,
+    matrix_range,
+)
 from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
 
@@ -797,12 +802,13 @@ class Scanner:
                 cmd = "M109 S" + str(self.extruder_target)
                 self.gcode.run_script_from_command(cmd)
 
-    def run_touch_probe(self, gcmd):
+    def run_touch_probe(self, gcmd, sample_count=None):
         speed = gcmd.get_float(
             "PROBE_SPEED", self.scanner_touch_config["speed"], above=0.0
         )
         lift_speed = self.get_lift_speed(gcmd)
-        sample_count = self.get_samples(gcmd)
+        if sample_count is None:
+            sample_count = self.get_samples(gcmd)
         sample_retract_dist = self.get_sample_retract_dist(gcmd)
         samples_tolerance = self.get_samples_tolerance(gcmd)
         samples_retries = self.get_samples_tolerance_retries(gcmd)
@@ -3323,6 +3329,12 @@ class ScannerMeshHelper:
         self.overscan = config.getfloat("mesh_overscan", -1, minval=0)
         self.cluster_size = config.getfloat("mesh_cluster_size", 1, minval=0)
         self.runs = config.getint("mesh_runs", 1, minval=1)
+        self.touch_res_x, self.touch_res_y = config.getintlist(
+            "touch_mesh_probe_count", [5, 5], count=2
+        )
+        if self.touch_res_x < 2 or self.touch_res_y < 2:
+            raise config.error("touch_mesh_probe_count requires at least two points per axis")
+        self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
         self.adaptive_margin = mesh_config.getfloat(
             "adaptive_margin", 0, note_valid=False
         )
@@ -3601,31 +3613,52 @@ class ScannerMeshHelper:
         max_accel = toolhead.get_status(self.scanner.reactor.monotonic())["max_accel"]
         speed = gcmd.get_float("SPEED", self.speed, above=0.0)
         touch_matrix = []
+        scanner_at_touch = []
+        touch_step_x = (self.max_x - self.min_x) / (self.touch_res_x - 1)
+        touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
         try:
             self.scanner.check_temp(gcmd)
             self.scanner.trigger_method = 1
-            for yi in range(self.res_y):
+            for yi in range(self.touch_res_y):
                 row = []
-                y = self.min_y + yi * self.step_y
-                for xi in range(self.res_x):
-                    x = self.min_x + xi * self.step_x
+                scanner_row = []
+                y = self.min_y + yi * touch_step_y
+                for xi in range(self.touch_res_x):
+                    x = self.min_x + xi * touch_step_x
                     self.scanner._zhop()
                     toolhead.manual_move([x, y, None], speed)
                     toolhead.wait_moves()
-                    row.append(self.scanner.run_touch_probe(gcmd)[2])
+                    # run_touch_probe restores scan mode after every point.
+                    self.scanner.trigger_method = 1
+                    row.append(self.scanner.run_touch_probe(gcmd, self.touch_samples)[2])
+                    scanner_value = interpolate_matrix(
+                        scanner_matrix,
+                        self.min_x,
+                        self.max_x,
+                        self.min_y,
+                        self.max_y,
+                        self.res_x,
+                        self.res_y,
+                        x,
+                        y,
+                    )
+                    if scanner_value is None:
+                        raise gcmd.error("Touch mesh coordinate is outside Scanner mesh")
+                    scanner_row.append(scanner_value)
                 touch_matrix.append(row)
+                scanner_at_touch.append(scanner_row)
         finally:
             self.scanner.trigger_method = original_trigger_method
             self.scanner.set_accel(max_accel)
 
-        compensation = difference_matrix(touch_matrix, scanner_matrix)
+        compensation = difference_matrix(touch_matrix, scanner_at_touch)
         profile = CompensationProfile(
             self.min_x,
             self.max_x,
             self.min_y,
             self.max_y,
-            self.res_x,
-            self.res_y,
+            self.touch_res_x,
+            self.touch_res_y,
             compensation,
         )
         profile.save(self.scanner.printer.lookup_object("configfile"))

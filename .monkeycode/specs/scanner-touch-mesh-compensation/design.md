@@ -5,7 +5,7 @@ Updated: 2026-07-23
 
 ## Description
 
-该功能扩展 `BED_MESH_CALIBRATE`，通过一次 Scanner 全床网格和一次同坐标的 Touch 全床网格生成二维补偿矩阵。后续 `BED_MESH_CALIBRATE METHOD=scanner` 在生成 Scanner 网格后按坐标插值叠加补偿矩阵，使输出网格与 Touch 基准对齐。
+该功能扩展 `BED_MESH_CALIBRATE`，通过一次 Scanner 全床网格和一次独立点数的 Touch 全床网格生成二维补偿矩阵。后续 `BED_MESH_CALIBRATE METHOD=scanner` 在生成 Scanner 网格后按坐标插值叠加补偿矩阵，使输出网格与 Touch 基准对齐。
 
 ## Architecture
 
@@ -35,7 +35,7 @@ flowchart LR
 
 ### Touch Mesh Acquisition
 
-在与 Scanner Mesh 相同的每个逻辑网格坐标采集 Touch 样本。Scanner 的 XY 偏移仅用于 Scanner 传感器路径；Touch 采样将喷嘴移动到逻辑网格坐标。每个点复用 Scanner Touch 的速度、回抽距离、样本数、容差和重试规则。
+Touch Mesh 使用 `[scanner] touch_mesh_probe_count` 定义独立的逻辑网格，默认 `5,5`。每个点使用 `[scanner] touch_mesh_samples` 指定的有效触发次数，默认 `3`。每个 Touch 点开始前设置 Touch 触发模式，因为单点采样完成后会恢复 Scanner 触发模式。Scanner 的 XY 偏移仅用于 Scanner 传感器路径；Touch 采样将喷嘴移动到逻辑网格坐标。Scanner Mesh 通过双线性插值映射到每个 Touch 坐标后参与差值计算。
 
 ### Compensation Matrix
 

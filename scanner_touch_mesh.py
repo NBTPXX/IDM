@@ -104,3 +104,21 @@ def matrix_range(matrix):
     if not values:
         raise ValueError("compensation matrix is empty")
     return min(values), max(values)
+
+
+def interpolate_matrix(matrix, min_x, max_x, min_y, max_y, x_count, y_count, x, y):
+    if x < min_x or x > max_x or y < min_y or y > max_y:
+        return None
+    if len(matrix) != y_count or any(len(row) != x_count for row in matrix):
+        raise ValueError("matrix dimensions do not match interpolation geometry")
+
+    x_index = (x - min_x) * (x_count - 1) / (max_x - min_x)
+    y_index = (y - min_y) * (y_count - 1) / (max_y - min_y)
+    x0 = min(int(x_index), x_count - 2)
+    y0 = min(int(y_index), y_count - 2)
+    x_fraction = x_index - x0
+    y_fraction = y_index - y0
+
+    lower = matrix[y0][x0] * (1 - x_fraction) + matrix[y0][x0 + 1] * x_fraction
+    upper = matrix[y0 + 1][x0] * (1 - x_fraction) + matrix[y0 + 1][x0 + 1] * x_fraction
+    return lower * (1 - y_fraction) + upper * y_fraction
