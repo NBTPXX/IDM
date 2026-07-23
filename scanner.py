@@ -2991,6 +2991,9 @@ class ScannerWrapper:
     def get_offsets(self, gcmd=None):
         return self.scanner.get_offsets(gcmd)
 
+    def get_status(self, eventtime):
+        return {"name": self.scanner.name}
+
     def get_lift_speed(self, gcmd=None):
         return self.scanner.get_lift_speed(gcmd)
 
