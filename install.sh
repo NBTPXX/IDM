@@ -16,7 +16,7 @@ echo "idm: installing python requirements to env, this may take 10+ minutes."
 
 # Update links to Klipper extra modules.
 echo "IDM: linking modules into klipper"
-for file in idm.py scanner.py scanner_auto_pa.py; do
+for file in idm.py scanner.py scanner_auto_pa.py scanner_touch_mesh.py; do
     if [ -e "${KDIR}/klippy/extras/${file}" ]; then
         rm "${KDIR}/klippy/extras/${file}"
     fi
