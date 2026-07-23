@@ -13,8 +13,10 @@
 ├── scanner.py             Scanner、Touch 与 MCU 数据流实现
 ├── idm.py                 IDM 探针实现
 ├── scanner_auto_pa.py     Scanner 自动 Pressure Advance 校准
+├── scanner_touch_mesh.py  Touch Mesh 补偿配置模型
 ├── arg_fit.py             参数拟合工具
 ├── test_scanner_auto_pa.py 自动 PA 单元测试
+├── test_scanner_touch_mesh.py Touch Mesh 补偿单元测试
 └── install.sh             安装脚本
 ```
 
@@ -37,4 +39,5 @@ flowchart LR
 | `scanner.py` | Scanner 配置、样本流、模型、探测和 Touch G-code 命令 |
 | `idm.py` | IDM 探针与模型配置 |
 | `scanner_auto_pa.py` | `SCANNER_AUTO_PA` K 扫描、样本分析、结果应用和 CSV 导出 |
+| `scanner_touch_mesh.py` | Touch Mesh 补偿矩阵的配置解析、校验和运行时配置写入 |
 | `arg_fit.py` | 离线拟合工具 |

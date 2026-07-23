@@ -10,8 +10,15 @@
 ```bash
 python3 -m py_compile scanner_auto_pa.py
 python3 -m unittest test_scanner_auto_pa.py
+python3 -m unittest test_scanner_touch_mesh.py
 git diff --check
 ```
+
+## Touch Mesh 补偿配置
+
+- `scanner_touch_mesh.py` 维护 `[scanner touch_mesh_compensation]` 的二维补偿矩阵与网格元数据。
+- 配置通过 Klipper `configfile.set()` 写入运行时状态，执行 `SAVE_CONFIG` 后持久化。
+- 补偿矩阵的行优先顺序为 `[y][x]`，并要求网格范围具有正面积以及每轴至少两个点。
 
 ## Scanner Auto PA 开发约定
 
