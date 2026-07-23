@@ -139,3 +139,6 @@ cython_debug/
 
 # Local MonkeyCode specifications, documentation, and session memory
 .monkeycode/
+
+# Local scanner mesh tests
+test_scanner_touch_mesh.py
