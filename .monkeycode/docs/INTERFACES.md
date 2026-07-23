@@ -69,6 +69,9 @@ Touch 网格参数独立于 `[bed_mesh] probe_count`：
 [scanner]
 touch_mesh_probe_count: 5,5
 touch_mesh_samples: 3
+touch_mesh_retry_threshold: 0.05
 ```
 
-`touch_mesh_probe_count` 控制 Touch Mesh 的 X、Y 点数，默认 `5,5`。`touch_mesh_samples` 控制每个 Touch 网格点的有效触发次数，默认 `3`。Scanner Mesh 继续使用 `[bed_mesh] probe_count`，并在 Touch 网格坐标上进行双线性插值后计算补偿。
+`touch_mesh_probe_count` 控制 Touch Mesh 的 X、Y 点数，默认 `5,5`。每个点先 Touch 一次；首次结果与 Scanner 插值值的绝对差异大于 `touch_mesh_retry_threshold` 时，追加 `touch_mesh_samples` 次 Touch，默认阈值 `0.05 mm`、追加次数 `3`。系统使用该点所有 Touch 结果的中位数计算补偿。Scanner Mesh 继续使用 `[bed_mesh] probe_count`，并在 Touch 网格坐标上进行双线性插值后计算补偿。
+
+`SAVE_CONFIG` 会生成 `[scanner touch_mesh_compensation]` 段保存补偿矩阵。该段由系统管理，Klipper 启动时会将其识别为持久化补偿数据。

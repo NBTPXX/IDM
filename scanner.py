@@ -34,10 +34,12 @@ from . import thermistor
 from . import adc_temperature
 from . import adxl345
 from .scanner_touch_mesh import (
+    COMPENSATION_SECTION,
     CompensationProfile,
     difference_matrix,
     interpolate_matrix,
     matrix_range,
+    needs_touch_retry,
 )
 from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
@@ -3335,6 +3337,9 @@ class ScannerMeshHelper:
         if self.touch_res_x < 2 or self.touch_res_y < 2:
             raise config.error("touch_mesh_probe_count requires at least two points per axis")
         self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
+        self.touch_retry_threshold = config.getfloat(
+            "touch_mesh_retry_threshold", 0.05, minval=0
+        )
         self.adaptive_margin = mesh_config.getfloat(
             "adaptive_margin", 0, note_valid=False
         )
@@ -3614,6 +3619,7 @@ class ScannerMeshHelper:
         speed = gcmd.get_float("SPEED", self.speed, above=0.0)
         touch_matrix = []
         scanner_at_touch = []
+        retried_points = 0
         touch_step_x = (self.max_x - self.min_x) / (self.touch_res_x - 1)
         touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
         try:
@@ -3628,9 +3634,6 @@ class ScannerMeshHelper:
                     self.scanner._zhop()
                     toolhead.manual_move([x, y, None], speed)
                     toolhead.wait_moves()
-                    # run_touch_probe restores scan mode after every point.
-                    self.scanner.trigger_method = 1
-                    row.append(self.scanner.run_touch_probe(gcmd, self.touch_samples)[2])
                     scanner_value = interpolate_matrix(
                         scanner_matrix,
                         self.min_x,
@@ -3644,6 +3647,17 @@ class ScannerMeshHelper:
                     )
                     if scanner_value is None:
                         raise gcmd.error("Touch mesh coordinate is outside Scanner mesh")
+                    # run_touch_probe restores scan mode after every point.
+                    self.scanner.trigger_method = 1
+                    touch_values = [self.scanner.run_touch_probe(gcmd, 1)[2]]
+                    if needs_touch_retry(
+                        touch_values[0], scanner_value, self.touch_retry_threshold
+                    ):
+                        retried_points += 1
+                        for _ in range(self.touch_samples):
+                            self.scanner.trigger_method = 1
+                            touch_values.append(self.scanner.run_touch_probe(gcmd, 1)[2])
+                    row.append(float(np.median(touch_values)))
                     scanner_row.append(scanner_value)
                 touch_matrix.append(row)
                 scanner_at_touch.append(scanner_row)
@@ -3668,6 +3682,12 @@ class ScannerMeshHelper:
         gcmd.respond_info("Touch mesh compensation: %s" % (json.dumps(compensation),))
         gcmd.respond_info(
             "Touch mesh compensation range: %.6f to %.6f" % (minimum, maximum)
+        )
+        gcmd.respond_info(
+            "Touch mesh retried %d points above %.6f mm" % (
+                retried_points,
+                self.touch_retry_threshold,
+            )
         )
         gcmd.respond_info("Run SAVE_CONFIG to persist touch mesh compensation")
 
@@ -4104,5 +4124,8 @@ def load_config_prefix(config):
         model = ScannerModel.load(name, config, scanner)
         scanner._register_model(name, model)
         return model
+    elif name == COMPENSATION_SECTION:
+        # SAVE_CONFIG stores persistent Touch Mesh compensation here.
+        return config
     else:
         raise config.error("Unknown scanner config directive '%s'" % (name[7:],))

@@ -35,7 +35,7 @@ flowchart LR
 
 ### Touch Mesh Acquisition
 
-Touch Mesh 使用 `[scanner] touch_mesh_probe_count` 定义独立的逻辑网格，默认 `5,5`。每个点使用 `[scanner] touch_mesh_samples` 指定的有效触发次数，默认 `3`。每个 Touch 点开始前设置 Touch 触发模式，因为单点采样完成后会恢复 Scanner 触发模式。Scanner 的 XY 偏移仅用于 Scanner 传感器路径；Touch 采样将喷嘴移动到逻辑网格坐标。Scanner Mesh 通过双线性插值映射到每个 Touch 坐标后参与差值计算。
+Touch Mesh 使用 `[scanner] touch_mesh_probe_count` 定义独立的逻辑网格，默认 `5,5`。每个点先执行一次 Touch；首次结果与 Scanner 插值值的绝对差异大于 `[scanner] touch_mesh_retry_threshold` 时，追加 `[scanner] touch_mesh_samples` 次单点 Touch。默认阈值为 `0.05 mm`，默认追加次数为 `3`，最终结果为全部 Touch 值的中位数。每个 Touch 点开始前设置 Touch 触发模式，因为单点采样完成后会恢复 Scanner 触发模式。Scanner 的 XY 偏移仅用于 Scanner 传感器路径；Touch 采样将喷嘴移动到逻辑网格坐标。Scanner Mesh 通过双线性插值映射到每个 Touch 坐标后参与差值计算。
 
 ### Compensation Matrix
 
