@@ -1,57 +1,5 @@
 # 接口文档
 
-## Scanner Auto PA
-
-在 `printer.cfg` 增加：
-
-```ini
-[scanner_auto_pa]
-# filament_diameter: 1.75
-# xy_amplitude: 1.0
-# baseline_time: 1.0
-# min_samples: 20
-```
-
-命令：
-
-```gcode
-SCANNER_AUTO_PA START_K=0.00 END_K=0.10 STEP=0.002 CYCLES=14 \
-  LOW_FLOW=1.92 HIGH_FLOW=19.24 LOW_TIME=1.0 HIGH_TIME=0.25 \
-  ACCEL=5000 APPLY=0 EXPORT=pa-results.csv
-```
-
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `START_K` | `0.00` | 扫描起始 K |
-| `END_K` | `0.10` | 扫描结束 K |
-| `STEP` | `0.002` | K 扫描步长 |
-| `CYCLES` | `14` | 每个 K 的低/高/低测试周期数 |
-| `LOW_FLOW` | `1.92` | 低流量，单位 mm3/s |
-| `HIGH_FLOW` | `19.24` | 高流量，单位 mm3/s |
-| `LOW_TIME` | `1.0` | 低流量持续时间，单位 s |
-| `HIGH_TIME` | `0.25` | 高流量持续时间，单位 s |
-| `ACCEL` | `5000` | 测试加速度，单位 mm/s2 |
-| `APPLY` | `0` | `1` 时应用推荐 K |
-| `EXPORT` | 空 | CSV 文件名，输出到 `/tmp` |
-
-命令要求 Scanner 模型、活动挤出机和已 homing 的 XYZ 轴。`APPLY=0` 时，模块在扫描结束后恢复原 Pressure Advance 值。
-
-## 单次信号调试
-
-```gcode
-SCANNER_AUTO_PA_DEBUG K=0.04 CYCLES=1 LOW_FLOW=1 HIGH_FLOW=2 FILENAME=pa-debug.csv
-```
-
-该命令执行单个候选 K 的测试周期，并将基线与测试阶段的 `time`、`data`、`freq`、`pressure_proxy`、`temp` 和 XYZ 位置写入 `/tmp/pa-debug.csv`。命令结束后恢复原 Pressure Advance 和加速度限制。
-
-## IDM 阈值扫描日志
-
-```gcode
-IDM_THRESHOLD_SCAN DEBUG=1
-```
-
-`DEBUG=1` 会输出每次 Touch 触发的 `probe at X,Y is z=...` 记录，同时保留每个阈值的资格检查和验证汇总。默认 `DEBUG=0` 仅输出阈值阶段汇总。
-
 ## 全床 Touch Mesh 补偿校准
 
 ```gcode
