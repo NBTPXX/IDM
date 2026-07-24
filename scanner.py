@@ -3955,8 +3955,11 @@ class ScannerMeshHelper:
     def _fill_round_mesh_edges(self, matrix):
         if not self.is_round:
             return matrix
-        return fill_round_mesh_edges(
-            matrix, [self._round_row_indices(yi) for yi in range(self.res_y)]
+        return np.asarray(
+            fill_round_mesh_edges(
+                matrix, [self._round_row_indices(yi) for yi in range(self.res_y)]
+            ),
+            dtype=float,
         )
 
     def _is_valid_position(self, x, y):
