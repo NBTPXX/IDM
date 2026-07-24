@@ -141,10 +141,15 @@ class Scanner:
                         "zero_reference_position"
                     ).split(",")
             else:
-                stepper_x = config.getsection("stepper_x")
-                use_x = stepper_x.getfloat("position_max") / 2
-                stepper_y = config.getsection("stepper_y")
-                use_y = stepper_y.getfloat("position_max") / 2
+                if mesh_config.get("mesh_radius", None) is not None:
+                    use_x, use_y = mesh_config.getfloatlist(
+                        "mesh_origin", [0.0, 0.0], count=2
+                    )
+                else:
+                    min_x, min_y = mesh_config.getfloatlist("mesh_min", count=2)
+                    max_x, max_y = mesh_config.getfloatlist("mesh_max", count=2)
+                    use_x = (min_x + max_x) / 2.0
+                    use_y = (min_y + max_y) / 2.0
                 raise self.printer.command_error(
                     f"Please update your [bed_mesh] section to include zero_reference_position: {use_x:.2f},{use_y:.2f} in printer.cfg.\nPlease read the manual"
                 )
