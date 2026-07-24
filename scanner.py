@@ -3331,6 +3331,15 @@ class ScannerMeshHelper:
         self.scanner = scanner
         self.scipy = None
         self.mesh_config = mesh_config
+        printer_config = config.getsection("printer")
+        self.delta_print_radius = None
+        if printer_config.get("kinematics", "").strip().lower() == "delta":
+            self.delta_print_radius = printer_config.getfloat(
+                "print_radius",
+                printer_config.getfloat("delta_radius"),
+                above=0,
+                note_valid=False,
+            )
         self.bm = self.scanner.printer.load_object(mesh_config, "bed_mesh")
         try:
             self.compensation_profile = CompensationProfile.load(config)
@@ -3456,6 +3465,10 @@ class ScannerMeshHelper:
         if method == "scanner":
             self.calibrate(gcmd)
         elif method == "touch_compensation":
+            if gcmd.get_int("ADAPTIVE", 0):
+                gcmd.respond_info(
+                    "METHOD=touch_compensation ignores ADAPTIVE=1 and uses fixed mesh bounds"
+                )
             self.calibrate_touch_compensation(gcmd)
         else:
             self.prev_gcmd(gcmd)
@@ -3578,7 +3591,7 @@ class ScannerMeshHelper:
 
         return points
 
-    def calibrate(self, gcmd, apply_mesh=True):
+    def calibrate(self, gcmd, apply_mesh=True, adaptive=True):
         self.active_is_round = self.is_round
         if self.is_round:
             self.radius = gcmd.get_float("MESH_RADIUS", self.def_radius, above=0)
@@ -3652,11 +3665,13 @@ class ScannerMeshHelper:
             self.zero_ref_mode = None
 
         # Adaptive calibration uses the rectangular object bounds for every bed shape.
-        if gcmd.get_int("ADAPTIVE", 0):
+        if adaptive and gcmd.get_int("ADAPTIVE", 0):
             if self.exclude_object is not None:
                 margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
                 if self._shrink_to_excluded_objects(gcmd, margin):
                     self.active_is_round = False
+                    if self.is_round:
+                        self._limit_round_adaptive_overscan(gcmd)
                 else:
                     gcmd.respond_info(
                         "Requested adaptive mesh, but no print objects are defined. Ignoring."
@@ -3671,6 +3686,7 @@ class ScannerMeshHelper:
 
         self.toolhead = self.scanner.toolhead
         path = self._generate_path()
+        self._validate_delta_path(gcmd, path)
 
         probe_speed = gcmd.get_float("PROBE_SPEED", self.scanner.speed, above=0.0)
         self.scanner._move_to_probing_height(probe_speed)
@@ -3715,7 +3731,7 @@ class ScannerMeshHelper:
 
         # Capture raw Scanner values so an existing profile cannot affect
         # the newly calculated Touch Mesh compensation.
-        scanner_matrix = self.calibrate(gcmd, apply_mesh=False)
+        scanner_matrix = self.calibrate(gcmd, apply_mesh=False, adaptive=False)
         gcmd.respond_info("Touch mesh compensation uses raw Scanner measurements")
         original_trigger_method = self.scanner.trigger_method
         max_accel = toolhead.get_status(self.scanner.reactor.monotonic())["max_accel"]
@@ -3776,20 +3792,8 @@ class ScannerMeshHelper:
                 scanner_at_touch[yi][xi] = scanner_value
 
             if self.is_round:
-                touch_matrix = fill_round_mesh_edges(
-                    touch_matrix,
-                    [
-                        round_mesh_row_indices(self.touch_res_x, yi)
-                        for yi in range(self.touch_res_y)
-                    ],
-                )
-                scanner_at_touch = fill_round_mesh_edges(
-                    scanner_at_touch,
-                    [
-                        round_mesh_row_indices(self.touch_res_x, yi)
-                        for yi in range(self.touch_res_y)
-                    ],
-                )
+                touch_matrix = self._fill_round_mesh_edges(touch_matrix)
+                scanner_at_touch = self._fill_round_mesh_edges(scanner_at_touch)
 
             aligned_touch, aligned_scanner = align_matrices_at_center(
                 touch_matrix,
@@ -3960,6 +3964,48 @@ class ScannerMeshHelper:
         self.profile_name = None
         return True
 
+    def _limit_round_adaptive_overscan(self, gcmd):
+        requested_overscan = self.overscan
+        if requested_overscan <= 0:
+            return
+
+        offset_x = self.scanner.offset["x"]
+        offset_y = self.scanner.offset["y"]
+
+        def path_fits_round_bed():
+            return all(
+                self._is_round_position(x + offset_x, y + offset_y)
+                for x, y in self._generate_path()
+            )
+
+        if path_fits_round_bed():
+            return
+
+        lower, upper = 0.0, requested_overscan
+        for _ in range(32):
+            self.overscan = (lower + upper) / 2.0
+            if path_fits_round_bed():
+                lower = self.overscan
+            else:
+                upper = self.overscan
+        self.overscan = lower
+        gcmd.respond_info(
+            "Adaptive overscan limited to %.3f mm by the circular mesh radius"
+            % self.overscan
+        )
+
+    def _validate_delta_path(self, gcmd, path):
+        if self.delta_print_radius is None:
+            return
+
+        for x, y in path:
+            if math.hypot(x, y) > self.delta_print_radius + 1.0e-9:
+                raise gcmd.error(
+                    "Scanner mesh path exceeds Delta print_radius %.3f at %.3f,%.3f; "
+                    "adjust mesh bounds, Scanner XY offsets, or overscan"
+                    % (self.delta_print_radius, x, y)
+                )
+
     def _fly_path(self, path, speed, runs):
         # Run through the path
         for i in range(runs):
@@ -3989,12 +4035,37 @@ class ScannerMeshHelper:
     def _fill_round_mesh_edges(self, matrix):
         if not self.active_is_round:
             return matrix
-        return np.asarray(
-            fill_round_mesh_edges(
-                matrix, [self._round_row_indices(yi) for yi in range(self.res_y)]
-            ),
-            dtype=float,
-        )
+        x_count = len(matrix[0]) if matrix else 0
+        y_count = len(matrix)
+        if x_count < 3 or x_count != y_count or any(len(row) != x_count for row in matrix):
+            raise ValueError("round mesh matrix must be a non-empty square grid")
+        valid_rows = [self._round_row_indices(yi, x_count) for yi in range(y_count)]
+        step_x = (self.max_x - self.min_x) / (x_count - 1)
+        step_y = (self.max_y - self.min_y) / (y_count - 1)
+        missing = []
+        for yi, valid_indices in enumerate(valid_rows):
+            edge_indices = (
+                (valid_indices[0],)
+                if valid_indices[0] == valid_indices[-1]
+                else (valid_indices[0], valid_indices[-1])
+            )
+            for xi in edge_indices:
+                value = matrix[yi][xi]
+                if value is None or not math.isfinite(value):
+                    missing.append(
+                        "%.3f,%.3f"
+                        % (
+                            self.min_x + xi * step_x,
+                            self.min_y + yi * step_y,
+                        )
+                    )
+        if missing:
+            raise ValueError(
+                "round mesh is missing edge measurements at X,Y: %s; "
+                "increase CLUSTER_SIZE or inspect Scanner data at these coordinates"
+                % (", ".join(missing),)
+            )
+        return np.asarray(fill_round_mesh_edges(matrix, valid_rows), dtype=float)
 
     def _is_valid_position(self, x, y):
         within_bounds = self.min_x <= x <= self.max_x and self.min_y <= y <= self.max_y
