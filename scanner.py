@@ -4035,7 +4035,7 @@ class ScannerMeshHelper:
     def _fill_round_mesh_edges(self, matrix):
         if not self.active_is_round:
             return matrix
-        x_count = len(matrix[0]) if matrix else 0
+        x_count = len(matrix[0]) if len(matrix) else 0
         y_count = len(matrix)
         if x_count < 3 or x_count != y_count or any(len(row) != x_count for row in matrix):
             raise ValueError("round mesh matrix must be a non-empty square grid")
