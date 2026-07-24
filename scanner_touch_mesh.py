@@ -242,6 +242,21 @@ def arc_polyline(center, radius, start_angle, sweep_angle, max_sagitta=0.1):
 
 def rounded_square_path(origin, half_extent, side_half, max_radius, max_sagitta=0.1):
     """Return a closed rounded-square path contained by the bed circle."""
+    if half_extent >= max_radius - 1.0e-9:
+        # A layer touching an X/Y radius endpoint can only contain circular-boundary
+        # targets. Split the boundary into quadrants so each axis target is exact.
+        points = []
+        for quadrant in range(4):
+            points.extend(
+                arc_polyline(
+                    origin,
+                    max_radius,
+                    quadrant * math.pi / 2.0,
+                    math.pi / 2.0,
+                    max_sagitta,
+                )[0 if quadrant == 0 else 1 :]
+            )
+        return points
     outer_radius = math.hypot(half_extent, side_half)
     if outer_radius > max_radius + 1.0e-9:
         raise ValueError("rounded square exceeds the configured bed radius")
@@ -257,7 +272,7 @@ def rounded_square_path(origin, half_extent, side_half, max_radius, max_sagitta=
         points.extend(arc_polyline(center, radius, start, sweep, max_sagitta)[1:])
 
     def corner_path():
-        if side_half <= 1.0e-9 or max_radius - half_extent <= 1.0e-9:
+        if side_half <= 1.0e-9:
             angle = math.atan2(side_half, half_extent)
             return arc_polyline(
                 (0.0, 0.0),
@@ -396,15 +411,28 @@ def rounded_layer_mesh_trajectory(origin, radius, count, max_sagitta=0.1):
     for layer in layers:
         max_component = max(max(abs(x), abs(y)) for x, y in layer)
         side_half = max(min(abs(x), abs(y)) for x, y in layer)
-        trajectory.extend(
-            rounded_square_path(
-                origin,
-                max_component * step,
-                side_half * step,
-                radius,
-                max_sagitta,
+        half_extent = max_component * step
+        if side_half > 1.0e-9 and math.isclose(
+            math.hypot(half_extent, side_half * step), radius, abs_tol=1.0e-9
+        ):
+            boundary = sorted(
+                (
+                    (origin[0] + x * step, origin[1] + y * step)
+                    for x, y in layer
+                ),
+                key=lambda point: math.atan2(point[1] - origin[1], point[0] - origin[0]),
             )
-        )
+            trajectory.extend(boundary + boundary[:1])
+        else:
+            trajectory.extend(
+                rounded_square_path(
+                    origin,
+                    half_extent,
+                    side_half * step,
+                    radius,
+                    max_sagitta,
+                )
+            )
     matrix_extent = centered_matrix_extent(matrix_points)
     trajectory.extend(
         rounded_matrix_trajectory(

@@ -3334,6 +3334,7 @@ class ScannerMeshHelper:
 
         self.speed = mesh_config.getfloat("speed", 50.0, above=0.0, note_valid=False)
         self.is_round = mesh_config.get("mesh_radius", None) is not None
+        self.active_is_round = self.is_round
         if self.is_round:
             self.def_radius = mesh_config.getfloat("mesh_radius", above=0, note_valid=False)
             self.def_origin_x, self.def_origin_y = mesh_config.getfloatlist(
@@ -3491,7 +3492,7 @@ class ScannerMeshHelper:
     def _generate_path(self):
         xo = self.scanner.offset["x"]
         yo = self.scanner.offset["y"]
-        if self.is_round:
+        if self.active_is_round:
             points = [
                 (x - xo, y - yo)
                 for x, y in rounded_layer_mesh_trajectory(
@@ -3573,6 +3574,7 @@ class ScannerMeshHelper:
         return points
 
     def calibrate(self, gcmd, apply_mesh=True):
+        self.active_is_round = self.is_round
         if self.is_round:
             self.radius = gcmd.get_float("MESH_RADIUS", self.def_radius, above=0)
             self.origin_x, self.origin_y = coord_fallback(
@@ -3644,17 +3646,20 @@ class ScannerMeshHelper:
         else:
             self.zero_ref_mode = None
 
-        # If the user requested adaptive meshing, try to shrink the values we just configured
-        if gcmd.get_int("ADAPTIVE", 0) and not self.is_round:
+        # Adaptive calibration uses the rectangular object bounds for every bed shape.
+        if gcmd.get_int("ADAPTIVE", 0):
             if self.exclude_object is not None:
                 margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
-                self._shrink_to_excluded_objects(gcmd, margin)
+                if self._shrink_to_excluded_objects(gcmd, margin):
+                    self.active_is_round = False
+                else:
+                    gcmd.respond_info(
+                        "Requested adaptive mesh, but no print objects are defined. Ignoring."
+                    )
             else:
                 gcmd.respond_info(
                     "Requested adaptive mesh, but [exclude_object] is not enabled. Ignoring."
                 )
-        elif gcmd.get_int("ADAPTIVE", 0):
-            gcmd.respond_info("Adaptive mesh is unavailable for circular Scanner meshes.")
 
         self.step_x = (self.max_x - self.min_x) / (self.res_x - 1)
         self.step_y = (self.max_y - self.min_y) / (self.res_y - 1)
@@ -3890,7 +3895,7 @@ class ScannerMeshHelper:
         bound_min_y, bound_max_y = None, None
         objects = self.exclude_object.get_status().get("objects", {})
         if len(objects) == 0:
-            return
+            return False
 
         for obj in objects:
             for point in obj["polygon"]:
@@ -3902,6 +3907,25 @@ class ScannerMeshHelper:
         bound_max_x += margin
         bound_min_y -= margin
         bound_max_y += margin
+
+        if self.is_round:
+            original_bounds = (bound_min_x, bound_max_x, bound_min_y, bound_max_y)
+            radius = self.radius
+            origin_x, origin_y = self.origin_x, self.origin_y
+            bound_min_y = max(bound_min_y, origin_y - radius)
+            bound_max_y = min(bound_max_y, origin_y + radius)
+            y_extent = max(abs(bound_min_y - origin_y), abs(bound_max_y - origin_y))
+            x_extent = math.sqrt(max(0.0, radius * radius - y_extent * y_extent))
+            bound_min_x = max(bound_min_x, origin_x - x_extent)
+            bound_max_x = min(bound_max_x, origin_x + x_extent)
+            x_extent = max(abs(bound_min_x - origin_x), abs(bound_max_x - origin_x))
+            y_extent = math.sqrt(max(0.0, radius * radius - x_extent * x_extent))
+            bound_min_y = max(bound_min_y, origin_y - y_extent)
+            bound_max_y = min(bound_max_y, origin_y + y_extent)
+            if bound_min_x >= bound_max_x or bound_min_y >= bound_max_y:
+                raise gcmd.error("Adaptive bounds have no area within the circular mesh radius")
+            if original_bounds != (bound_min_x, bound_max_x, bound_min_y, bound_max_y):
+                gcmd.respond_info("Adaptive bounds clipped to the circular mesh radius")
 
         # Calculate original step size and apply the new bounds
         orig_span_x = self.max_x - self.min_x
@@ -3929,6 +3953,7 @@ class ScannerMeshHelper:
         self.res_y = max(self.res_y, min_res)
 
         self.profile_name = None
+        return True
 
     def _fly_path(self, path, speed, runs):
         # Run through the path
@@ -3936,7 +3961,7 @@ class ScannerMeshHelper:
             p = path if i % 2 == 0 else reversed(path)
             for (x, y) in p:
                 self.toolhead.manual_move([x, y, None], speed)
-                if self.is_round and math.hypot(
+                if self.active_is_round and math.hypot(
                     x - self.round_center_motion[0], y - self.round_center_motion[1]
                 ) <= 1.0e-6:
                     self.toolhead.dwell(self.round_mesh_center_dwell)
@@ -3957,7 +3982,7 @@ class ScannerMeshHelper:
         return math.hypot(x - self.origin_x, y - self.origin_y) <= self.radius + 1.0e-9
 
     def _fill_round_mesh_edges(self, matrix):
-        if not self.is_round:
+        if not self.active_is_round:
             return matrix
         return np.asarray(
             fill_round_mesh_edges(
@@ -3968,7 +3993,9 @@ class ScannerMeshHelper:
 
     def _is_valid_position(self, x, y):
         within_bounds = self.min_x <= x <= self.max_x and self.min_y <= y <= self.max_y
-        return within_bounds and (not self.is_round or self._is_round_position(x, y))
+        return within_bounds and (
+            not self.active_is_round or self._is_round_position(x, y)
+        )
 
     def _is_faulty_coordinate(self, x, y, add_offsets=False):
         if add_offsets:
@@ -4183,7 +4210,7 @@ class ScannerMeshHelper:
                 if np.isnan(matrix[(yi, xi)]):
                     xc = xi * self.step_x + self.min_x
                     yc = yi * self.step_y + self.min_y
-                    if self.is_round and not self._is_round_position(xc, yc):
+                    if self.active_is_round and not self._is_round_position(xc, yc):
                         continue
                     empty_clusters.append("  (%.3f,%.3f)[%d,%d]" % (xc, yc, xi, yi))
         if empty_clusters:
