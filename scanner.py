@@ -3668,11 +3668,12 @@ class ScannerMeshHelper:
         if adaptive and gcmd.get_int("ADAPTIVE", 0):
             if self.exclude_object is not None:
                 margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
-                if self._shrink_to_excluded_objects(gcmd, margin):
+                shrink_result = self._shrink_to_excluded_objects(gcmd, margin)
+                if shrink_result:
                     self.active_is_round = False
                     if self.is_round:
                         self._limit_round_adaptive_overscan(gcmd)
-                else:
+                elif shrink_result is None:
                     gcmd.respond_info(
                         "Requested adaptive mesh, but no print objects are defined. Ignoring."
                     )
@@ -3932,7 +3933,10 @@ class ScannerMeshHelper:
             bound_min_y = max(bound_min_y, origin_y - y_extent)
             bound_max_y = min(bound_max_y, origin_y + y_extent)
             if bound_min_x >= bound_max_x or bound_min_y >= bound_max_y:
-                raise gcmd.error("Adaptive bounds have no area within the circular mesh radius")
+                gcmd.respond_info(
+                    "Adaptive bounds cover the circular mesh; using the full circular mesh"
+                )
+                return False
             if original_bounds != (bound_min_x, bound_max_x, bound_min_y, bound_max_y):
                 gcmd.respond_info("Adaptive bounds clipped to the circular mesh radius")
 
