@@ -3664,13 +3664,16 @@ class ScannerMeshHelper:
         else:
             self.zero_ref_mode = None
 
-        # Circular meshes preserve a circular scan region around the print.
+        # Circular meshes use an inscribed square scan region around the print.
         if adaptive and gcmd.get_int("ADAPTIVE", 0):
             if self.exclude_object is not None:
                 margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
                 if self.is_round:
                     shrink_result = self._shrink_round_to_excluded_objects(gcmd, margin)
-                    if shrink_result is None:
+                    if shrink_result:
+                        self.active_is_round = False
+                        self._limit_round_adaptive_overscan(gcmd)
+                    elif shrink_result is None:
                         gcmd.respond_info(
                             "Requested adaptive mesh, but no print objects are defined. Ignoring."
                         )
@@ -3915,29 +3918,42 @@ class ScannerMeshHelper:
         max_x = max(point[0] for point in points)
         min_y = min(point[1] for point in points)
         max_y = max(point[1] for point in points)
-        origin_x = (min_x + max_x) / 2.0
-        origin_y = (min_y + max_y) / 2.0
-        radius = max(math.hypot(x - origin_x, y - origin_y) for x, y in points) + margin
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        desired_half = max(max_x - min_x, max_y - min_y) / 2.0 + margin
 
-        if math.hypot(origin_x - self.origin_x, origin_y - self.origin_y) + radius >= self.radius:
-            gcmd.respond_info(
-                "Adaptive bounds cover the circular mesh; using the full circular mesh"
+        def square_fits(half):
+            return all(
+                self._is_round_position(x, y)
+                for x, y in (
+                    (center_x - half, center_y - half),
+                    (center_x - half, center_y + half),
+                    (center_x + half, center_y - half),
+                    (center_x + half, center_y + half),
+                )
             )
-            return False
+
+        if not square_fits(0.0):
+            raise gcmd.error("Adaptive object center is outside the circular mesh")
+
+        lower, upper = 0.0, self.radius
+        for _ in range(32):
+            half = (lower + upper) / 2.0
+            if square_fits(half):
+                lower = half
+            else:
+                upper = half
+        half = min(desired_half, lower)
 
         original_step = (self.max_x - self.min_x) / (self.res_x - 1)
-        count = max(3, int(math.ceil(2.0 * radius / original_step)) + 1)
-        if count % 2 == 0:
-            count += 1
-        self.origin_x, self.origin_y = origin_x, origin_y
-        self.radius = radius
-        self.min_x, self.max_x = origin_x - radius, origin_x + radius
-        self.min_y, self.max_y = origin_y - radius, origin_y + radius
+        count = max(3, int(math.ceil(2.0 * half / original_step)) + 1)
+        self.min_x, self.max_x = center_x - half, center_x + half
+        self.min_y, self.max_y = center_y - half, center_y + half
         self.res_x = self.res_y = count
         self.profile_name = None
         gcmd.respond_info(
-            "Adaptive circular mesh radius %.3f at origin %.3f,%.3f"
-            % (radius, origin_x, origin_y)
+            "Adaptive square mesh X:%.3f,%.3f Y:%.3f,%.3f"
+            % (self.min_x, self.max_x, self.min_y, self.max_y)
         )
         return True
 
@@ -3946,7 +3962,7 @@ class ScannerMeshHelper:
         bound_min_y, bound_max_y = None, None
         objects = self.exclude_object.get_status().get("objects", {})
         if len(objects) == 0:
-            return False
+            return None
 
         for obj in objects:
             for point in obj["polygon"]:
@@ -3986,6 +4002,36 @@ class ScannerMeshHelper:
 
         self.profile_name = None
         return True
+
+    def _limit_round_adaptive_overscan(self, gcmd):
+        requested_overscan = self.overscan
+        if requested_overscan <= 0:
+            return
+
+        offset_x = self.scanner.offset["x"]
+        offset_y = self.scanner.offset["y"]
+
+        def path_fits_round_bed():
+            return all(
+                self._is_round_position(x + offset_x, y + offset_y)
+                for x, y in self._generate_path()
+            )
+
+        if path_fits_round_bed():
+            return
+
+        lower, upper = 0.0, requested_overscan
+        for _ in range(32):
+            self.overscan = (lower + upper) / 2.0
+            if path_fits_round_bed():
+                lower = self.overscan
+            else:
+                upper = self.overscan
+        self.overscan = lower
+        gcmd.respond_info(
+            "Adaptive overscan limited to %.3f mm by the circular mesh radius"
+            % self.overscan
+        )
 
     def _validate_delta_path(self, gcmd, path):
         if self.delta_print_radius is None:
