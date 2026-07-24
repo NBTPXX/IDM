@@ -3375,17 +3375,21 @@ class ScannerMeshHelper:
         self.overscan = config.getfloat("mesh_overscan", -1, minval=0)
         self.cluster_size = config.getfloat("mesh_cluster_size", 1, minval=0)
         self.runs = config.getint("mesh_runs", 1, minval=1)
-        self.touch_res_x, self.touch_res_y = config.getintlist(
-            "touch_mesh_probe_count", [5, 5], count=2
-        )
-        if self.touch_res_x < 2 or self.touch_res_y < 2:
-            raise config.error("touch_mesh_probe_count requires at least two points per axis")
-        if self.is_round and (
-            self.touch_res_x != self.touch_res_y or self.touch_res_x % 2 == 0
-        ):
-            raise config.error(
-                "circular touch_mesh_probe_count must use matching odd counts"
+        if self.is_round:
+            touch_round_count = config.getint(
+                "touch_mesh_round_probe_count", 5, minval=3
             )
+            if touch_round_count % 2 == 0:
+                raise config.error(
+                    "touch_mesh_round_probe_count must use an odd count"
+                )
+            self.touch_res_x = self.touch_res_y = touch_round_count
+        else:
+            self.touch_res_x, self.touch_res_y = config.getintlist(
+                "touch_mesh_probe_count", [5, 5], count=2
+            )
+            if self.touch_res_x < 2 or self.touch_res_y < 2:
+                raise config.error("touch_mesh_probe_count requires at least two points per axis")
         self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
         self.touch_retry_threshold = config.getfloat(
             "touch_mesh_retry_threshold", 0.05, minval=0
