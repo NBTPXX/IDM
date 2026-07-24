@@ -3918,37 +3918,60 @@ class ScannerMeshHelper:
         max_x = max(point[0] for point in points)
         min_y = min(point[1] for point in points)
         max_y = max(point[1] for point in points)
+        min_x -= margin
+        max_x += margin
+        min_y -= margin
+        max_y += margin
         center_x = (min_x + max_x) / 2.0
         center_y = (min_y + max_y) / 2.0
-        desired_half = max(max_x - min_x, max_y - min_y) / 2.0 + margin
+        desired_side = max(max_x - min_x, max_y - min_y)
+        direction_x = 1 if center_x > self.origin_x else -1 if center_x < self.origin_x else 0
+        direction_y = 1 if center_y > self.origin_y else -1 if center_y < self.origin_y else 0
 
-        def square_fits(half):
+        def square_bounds(side):
+            if direction_x > 0:
+                square_min_x, square_max_x = min_x, min_x + side
+            elif direction_x < 0:
+                square_min_x, square_max_x = max_x - side, max_x
+            else:
+                square_min_x, square_max_x = center_x - side / 2.0, center_x + side / 2.0
+            if direction_y > 0:
+                square_min_y, square_max_y = min_y, min_y + side
+            elif direction_y < 0:
+                square_min_y, square_max_y = max_y - side, max_y
+            else:
+                square_min_y, square_max_y = center_y - side / 2.0, center_y + side / 2.0
+            return square_min_x, square_max_x, square_min_y, square_max_y
+
+        def square_fits(side):
+            square_min_x, square_max_x, square_min_y, square_max_y = square_bounds(side)
             return all(
                 self._is_round_position(x, y)
                 for x, y in (
-                    (center_x - half, center_y - half),
-                    (center_x - half, center_y + half),
-                    (center_x + half, center_y - half),
-                    (center_x + half, center_y + half),
+                    (square_min_x, square_min_y),
+                    (square_min_x, square_max_y),
+                    (square_max_x, square_min_y),
+                    (square_max_x, square_max_y),
                 )
             )
 
         if not square_fits(0.0):
-            raise gcmd.error("Adaptive object center is outside the circular mesh")
+            raise gcmd.error("Adaptive object bounds do not overlap the circular mesh")
 
         lower, upper = 0.0, self.radius
         for _ in range(32):
-            half = (lower + upper) / 2.0
-            if square_fits(half):
-                lower = half
+            side = (lower + upper) / 2.0
+            if square_fits(side):
+                lower = side
             else:
-                upper = half
-        half = min(desired_half, lower)
+                upper = side
+        side = min(desired_side, lower)
+        square_min_x, square_max_x, square_min_y, square_max_y = square_bounds(side)
 
         original_step = (self.max_x - self.min_x) / (self.res_x - 1)
-        count = max(3, int(math.ceil(2.0 * half / original_step)) + 1)
-        self.min_x, self.max_x = center_x - half, center_x + half
-        self.min_y, self.max_y = center_y - half, center_y + half
+        count = max(3, int(math.ceil(side / original_step)) + 1)
+        self.min_x, self.max_x = square_min_x, square_max_x
+        self.min_y, self.max_y = square_min_y, square_max_y
         self.res_x = self.res_y = count
         self.profile_name = None
         gcmd.respond_info(
