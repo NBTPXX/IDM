@@ -3664,19 +3664,24 @@ class ScannerMeshHelper:
         else:
             self.zero_ref_mode = None
 
-        # Adaptive calibration uses the rectangular object bounds for every bed shape.
+        # Circular meshes preserve a circular scan region around the print.
         if adaptive and gcmd.get_int("ADAPTIVE", 0):
             if self.exclude_object is not None:
                 margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
-                shrink_result = self._shrink_to_excluded_objects(gcmd, margin)
-                if shrink_result:
-                    self.active_is_round = False
-                    if self.is_round:
-                        self._limit_round_adaptive_overscan(gcmd)
-                elif shrink_result is None:
-                    gcmd.respond_info(
-                        "Requested adaptive mesh, but no print objects are defined. Ignoring."
-                    )
+                if self.is_round:
+                    shrink_result = self._shrink_round_to_excluded_objects(gcmd, margin)
+                    if shrink_result is None:
+                        gcmd.respond_info(
+                            "Requested adaptive mesh, but no print objects are defined. Ignoring."
+                        )
+                else:
+                    shrink_result = self._shrink_to_excluded_objects(gcmd, margin)
+                    if shrink_result:
+                        self.active_is_round = False
+                    elif shrink_result is None:
+                        gcmd.respond_info(
+                            "Requested adaptive mesh, but no print objects are defined. Ignoring."
+                        )
             else:
                 gcmd.respond_info(
                     "Requested adaptive mesh, but [exclude_object] is not enabled. Ignoring."
@@ -3900,6 +3905,42 @@ class ScannerMeshHelper:
             gcmd.respond_info("Applied saved Touch mesh compensation")
         return matrix
 
+    def _shrink_round_to_excluded_objects(self, gcmd, margin):
+        objects = self.exclude_object.get_status().get("objects", {})
+        if len(objects) == 0:
+            return None
+
+        points = [point for obj in objects for point in obj["polygon"]]
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        origin_x = (min_x + max_x) / 2.0
+        origin_y = (min_y + max_y) / 2.0
+        radius = max(math.hypot(x - origin_x, y - origin_y) for x, y in points) + margin
+
+        if math.hypot(origin_x - self.origin_x, origin_y - self.origin_y) + radius >= self.radius:
+            gcmd.respond_info(
+                "Adaptive bounds cover the circular mesh; using the full circular mesh"
+            )
+            return False
+
+        original_step = (self.max_x - self.min_x) / (self.res_x - 1)
+        count = max(3, int(math.ceil(2.0 * radius / original_step)) + 1)
+        if count % 2 == 0:
+            count += 1
+        self.origin_x, self.origin_y = origin_x, origin_y
+        self.radius = radius
+        self.min_x, self.max_x = origin_x - radius, origin_x + radius
+        self.min_y, self.max_y = origin_y - radius, origin_y + radius
+        self.res_x = self.res_y = count
+        self.profile_name = None
+        gcmd.respond_info(
+            "Adaptive circular mesh radius %.3f at origin %.3f,%.3f"
+            % (radius, origin_x, origin_y)
+        )
+        return True
+
     def _shrink_to_excluded_objects(self, gcmd, margin):
         bound_min_x, bound_max_x = None, None
         bound_min_y, bound_max_y = None, None
@@ -3917,28 +3958,6 @@ class ScannerMeshHelper:
         bound_max_x += margin
         bound_min_y -= margin
         bound_max_y += margin
-
-        if self.is_round:
-            original_bounds = (bound_min_x, bound_max_x, bound_min_y, bound_max_y)
-            radius = self.radius
-            origin_x, origin_y = self.origin_x, self.origin_y
-            bound_min_y = max(bound_min_y, origin_y - radius)
-            bound_max_y = min(bound_max_y, origin_y + radius)
-            y_extent = max(abs(bound_min_y - origin_y), abs(bound_max_y - origin_y))
-            x_extent = math.sqrt(max(0.0, radius * radius - y_extent * y_extent))
-            bound_min_x = max(bound_min_x, origin_x - x_extent)
-            bound_max_x = min(bound_max_x, origin_x + x_extent)
-            x_extent = max(abs(bound_min_x - origin_x), abs(bound_max_x - origin_x))
-            y_extent = math.sqrt(max(0.0, radius * radius - x_extent * x_extent))
-            bound_min_y = max(bound_min_y, origin_y - y_extent)
-            bound_max_y = min(bound_max_y, origin_y + y_extent)
-            if bound_min_x >= bound_max_x or bound_min_y >= bound_max_y:
-                gcmd.respond_info(
-                    "Adaptive bounds cover the circular mesh; using the full circular mesh"
-                )
-                return False
-            if original_bounds != (bound_min_x, bound_max_x, bound_min_y, bound_max_y):
-                gcmd.respond_info("Adaptive bounds clipped to the circular mesh radius")
 
         # Calculate original step size and apply the new bounds
         orig_span_x = self.max_x - self.min_x
@@ -3967,36 +3986,6 @@ class ScannerMeshHelper:
 
         self.profile_name = None
         return True
-
-    def _limit_round_adaptive_overscan(self, gcmd):
-        requested_overscan = self.overscan
-        if requested_overscan <= 0:
-            return
-
-        offset_x = self.scanner.offset["x"]
-        offset_y = self.scanner.offset["y"]
-
-        def path_fits_round_bed():
-            return all(
-                self._is_round_position(x + offset_x, y + offset_y)
-                for x, y in self._generate_path()
-            )
-
-        if path_fits_round_bed():
-            return
-
-        lower, upper = 0.0, requested_overscan
-        for _ in range(32):
-            self.overscan = (lower + upper) / 2.0
-            if path_fits_round_bed():
-                lower = self.overscan
-            else:
-                upper = self.overscan
-        self.overscan = lower
-        gcmd.respond_info(
-            "Adaptive overscan limited to %.3f mm by the circular mesh radius"
-            % self.overscan
-        )
 
     def _validate_delta_path(self, gcmd, path):
         if self.delta_print_radius is None:
