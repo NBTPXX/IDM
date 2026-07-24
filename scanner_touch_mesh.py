@@ -241,22 +241,7 @@ def arc_polyline(center, radius, start_angle, sweep_angle, max_sagitta=0.1):
 
 
 def rounded_square_path(origin, half_extent, side_half, max_radius, max_sagitta=0.1):
-    """Return a closed rounded-square path contained by the bed circle."""
-    if half_extent >= max_radius - 1.0e-9:
-        # A layer touching an X/Y radius endpoint can only contain circular-boundary
-        # targets. Split the boundary into quadrants so each axis target is exact.
-        points = []
-        for quadrant in range(4):
-            points.extend(
-                arc_polyline(
-                    origin,
-                    max_radius,
-                    quadrant * math.pi / 2.0,
-                    math.pi / 2.0,
-                    max_sagitta,
-                )[0 if quadrant == 0 else 1 :]
-            )
-        return points
+    """Return a rounded layer path through its four X/Y boundary sides."""
     outer_radius = math.hypot(half_extent, side_half)
     if outer_radius > max_radius + 1.0e-9:
         raise ValueError("rounded square exceeds the configured bed radius")
@@ -267,72 +252,23 @@ def rounded_square_path(origin, half_extent, side_half, max_radius, max_sagitta=
             x, y = -y, x
         return (origin[0] + x, origin[1] + y)
 
-    def append_arc(points, center, radius, start, end):
-        sweep = (end - start) % (2.0 * math.pi)
-        points.extend(arc_polyline(center, radius, start, sweep, max_sagitta)[1:])
-
-    def corner_path():
-        if side_half <= 1.0e-9:
-            angle = math.atan2(side_half, half_extent)
-            return arc_polyline(
-                (0.0, 0.0),
-                outer_radius,
-                angle,
-                math.pi / 2.0 - 2.0 * angle,
-                max_sagitta,
-            )[1:]
-
-        transition_radius = (
-            max_radius * max_radius - half_extent * half_extent - side_half * side_half
-        ) / (2.0 * (max_radius - half_extent))
-        if transition_radius <= 1.0e-9:
-            raise ValueError("unable to create a contained tangent corner")
-        first_center = (half_extent - transition_radius, side_half)
-        second_center = (side_half, half_extent - transition_radius)
-        first_distance = math.hypot(*first_center)
-        second_distance = math.hypot(*second_center)
-        first_contact = (
-            first_center[0] * max_radius / first_distance,
-            first_center[1] * max_radius / first_distance,
-        )
-        second_contact = (
-            second_center[0] * max_radius / second_distance,
-            second_center[1] * max_radius / second_distance,
-        )
-        points = []
-        append_arc(
-            points,
-            first_center,
-            transition_radius,
-            0.0,
-            math.atan2(first_contact[1] - first_center[1], first_contact[0] - first_center[0]),
-        )
-        append_arc(
-            points,
-            (0.0, 0.0),
-            max_radius,
-            math.atan2(first_contact[1], first_contact[0]),
-            math.atan2(second_contact[1], second_contact[0]),
-        )
-        append_arc(
-            points,
-            second_center,
-            transition_radius,
-            math.atan2(second_contact[1] - second_center[1], second_contact[0] - second_center[0]),
-            math.pi / 2.0,
-        )
-        return points
-
     points = [(origin[0] + half_extent, origin[1] - side_half)]
     points.append((origin[0] + half_extent, origin[1] + side_half))
+    start_angle = math.atan2(side_half, half_extent)
+    corner_path = arc_polyline(
+        (0.0, 0.0),
+        outer_radius,
+        start_angle,
+        math.pi / 2.0 - 2.0 * start_angle,
+        max_sagitta,
+    )[1:]
     side_endpoints = [
         (-side_half, half_extent),
         (-half_extent, -side_half),
         (side_half, -half_extent),
     ]
-    base_corner = corner_path()
     for index in range(4):
-        points.extend(rotate(point, index) for point in base_corner)
+        points.extend(rotate(point, index) for point in corner_path)
         if index < len(side_endpoints):
             points.append(rotate(side_endpoints[index], 0))
     return points
@@ -412,27 +348,15 @@ def rounded_layer_mesh_trajectory(origin, radius, count, max_sagitta=0.1):
         max_component = max(max(abs(x), abs(y)) for x, y in layer)
         side_half = max(min(abs(x), abs(y)) for x, y in layer)
         half_extent = max_component * step
-        if side_half > 1.0e-9 and math.isclose(
-            math.hypot(half_extent, side_half * step), radius, abs_tol=1.0e-9
-        ):
-            boundary = sorted(
-                (
-                    (origin[0] + x * step, origin[1] + y * step)
-                    for x, y in layer
-                ),
-                key=lambda point: math.atan2(point[1] - origin[1], point[0] - origin[0]),
+        trajectory.extend(
+            rounded_square_path(
+                origin,
+                half_extent,
+                side_half * step,
+                radius,
+                max_sagitta,
             )
-            trajectory.extend(boundary + boundary[:1])
-        else:
-            trajectory.extend(
-                rounded_square_path(
-                    origin,
-                    half_extent,
-                    side_half * step,
-                    radius,
-                    max_sagitta,
-                )
-            )
+        )
     matrix_extent = centered_matrix_extent(matrix_points)
     trajectory.extend(
         rounded_matrix_trajectory(
