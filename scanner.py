@@ -649,9 +649,7 @@ class Scanner:
                 )
 
                 try:
-                    probe_position = self._touch_move_with_slope_peak(
-                        homing_position, speed
-                    )
+                    probe_position = self._touch_move(homing_position, speed)
                 except self.printer.command_error as e:
                     if self.printer.is_shutdown():
                         self.trigger_method = 0
@@ -752,7 +750,7 @@ class Scanner:
         pos = toolhead.get_position()
         pos[2] = status["axis_minimum"][2]
         try:
-            epos = self._touch_move_with_slope_peak(pos, speed)
+            epos = self._touch_move(pos, speed)
             epos[2] += self.offset["z"]
             self.last_touch_trigger_height += self.offset["z"]
             self.last_touch_actual_height += self.offset["z"]
@@ -823,13 +821,10 @@ class Scanner:
         debug_file.write("time,data,data_smooth,freq,dist,temp,pos_x,pos_y,pos_z\n")
         return debug_file, debug_path
 
-    def _touch_move_with_slope_peak(self, target, speed):
-        samples = []
-        # One-sample latency keeps the callback active for the complete move.
-        with self.streaming_session(self._capture_touch_sample(samples), latency=1):
-            epos = self.phoming.probing_move(self.mcu_probe, target, speed)
+    def _touch_move(self, target, speed):
+        epos = self.phoming.probing_move(self.mcu_probe, target, speed)
         self.last_touch_trigger_height = float(epos[2])
-        self.last_touch_actual_height = self._touch_slope_peak_z(samples)
+        self.last_touch_actual_height = float(epos[2])
         return epos
 
     def _touch_slope_peak_z(self, samples):
