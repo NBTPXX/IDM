@@ -53,8 +53,7 @@ from clocksync import SecondarySync
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
 STREAM_TIMEOUT = 2.0
-TOUCH_SAVGOL_WINDOW = 151
-TOUCH_SAVGOL_POLYORDER = 3
+TOUCH_MOVING_AVERAGE_WINDOW = 150
 
 REG_THRESH_TOUCH = 0x1D
 REG_DUR = 0x21
@@ -797,16 +796,13 @@ class Scanner:
                     )
                 )
             pos = sample.get("pos")
-            dist = sample.get("dist")
             raw_data = sample.get("data")
             sample_time = sample.get("time")
             if (
                 pos is not None
                 and len(pos) >= 3
-                and dist is not None
                 and raw_data is not None
                 and sample_time is not None
-                and math.isfinite(dist)
                 and math.isfinite(raw_data)
                 and math.isfinite(sample_time)
                 and math.isfinite(pos[2])
@@ -837,10 +833,10 @@ class Scanner:
         return epos
 
     def _touch_slope_peak_z(self, samples):
-        if len(samples) < TOUCH_SAVGOL_WINDOW:
+        if len(samples) < TOUCH_MOVING_AVERAGE_WINDOW:
             raise self.printer.command_error(
                 "Touch slope analysis requires at least %d valid Scanner samples"
-                % TOUCH_SAVGOL_WINDOW
+                % TOUCH_MOVING_AVERAGE_WINDOW
             )
 
         points = np.asarray(samples, dtype=float)
@@ -854,28 +850,19 @@ class Scanner:
         times = times[keep]
         zs = zs[keep]
         raw_data = raw_data[keep]
-        if len(times) < TOUCH_SAVGOL_WINDOW:
+        if len(times) < TOUCH_MOVING_AVERAGE_WINDOW:
             raise self.printer.command_error(
                 "Touch slope analysis requires %d ordered Scanner samples"
-                % TOUCH_SAVGOL_WINDOW
+                % TOUCH_MOVING_AVERAGE_WINDOW
             )
 
-        try:
-            savgol_filter = importlib.import_module("scipy.signal").savgol_filter
-        except ImportError as error:
-            raise self.printer.command_error(
-                "Touch slope analysis requires scipy.signal.savgol_filter"
-            ) from error
-
-        smoothed = savgol_filter(
-            raw_data,
-            TOUCH_SAVGOL_WINDOW,
-            TOUCH_SAVGOL_POLYORDER,
-            mode="interp",
-        )
-        slopes = np.gradient(smoothed, times)
+        window = TOUCH_MOVING_AVERAGE_WINDOW
+        smoothed = np.convolve(raw_data, np.ones(window) / window, mode="valid")
+        smoothed_times = times[window - 1 :]
+        smoothed_zs = zs[window - 1 :]
+        slopes = np.gradient(smoothed, smoothed_times)
         peak_index = int(np.argmax(np.abs(slopes)))
-        return float(zs[peak_index])
+        return float(smoothed_zs[peak_index])
 
     def _calc_median(self, positions):
         z_sorted = sorted(positions, key=(lambda p: p[2]))
