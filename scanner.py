@@ -743,7 +743,7 @@ class Scanner:
                     kinematics.clear_homing_state([2])
             raise
 
-    def touch_probe(self, speed, skip=0, verbose=True):
+    def touch_probe(self, speed, skip=0, verbose=True, debug_file=None):
         skipped_msg = ""
         toolhead = self.printer.lookup_object("toolhead")
         curtime = self.printer.get_reactor().monotonic()
@@ -753,10 +753,10 @@ class Scanner:
         pos = toolhead.get_position()
         pos[2] = status["axis_minimum"][2]
         try:
-            epos = self._touch_move_with_slope_peak(pos, speed)
+            epos = self._touch_move_with_slope_peak(pos, speed, debug_file)
             epos[2] += self.offset["z"]
             self.last_touch_trigger_height += self.offset["z"]
-            self.last_touch_actual_height = epos[2]
+            self.last_touch_actual_height += self.offset["z"]
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -766,21 +766,38 @@ class Scanner:
             if skip == 1:
                 skipped_msg = " - SKIPPED - result not added"
             self.gcode.respond_info(
-                "probe at %.3f,%.3f is z=%.6f (trigger_z=%.6f)%s"
+                "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f)%s"
                 % (
                     epos[0],
                     epos[1],
                     epos[2],
-                    self.last_touch_trigger_height,
+                    self.last_touch_actual_height,
                     skipped_msg,
                 )
             )
         return epos[:3]
 
-    def _touch_move_with_slope_peak(self, target, speed):
+    def _touch_move_with_slope_peak(self, target, speed, debug_file=None):
         samples = []
 
         def capture(sample):
+            if debug_file is not None:
+                pos = sample.get("pos")
+                dist = sample.get("dist")
+                debug_file.write(
+                    "%.4f,%d,%.2f,%.5f,%s,%.2f,%s,%s,%s\n"
+                    % (
+                        sample["time"],
+                        sample["data"],
+                        sample["data_smooth"],
+                        sample["freq"],
+                        "%.5f" % dist if dist is not None else "",
+                        sample["temp"],
+                        "%.3f" % pos[0] if pos is not None else "",
+                        "%.3f" % pos[1] if pos is not None else "",
+                        "%.3f" % pos[2] if pos is not None else "",
+                    )
+                )
             pos = sample.get("pos")
             dist = sample.get("dist")
             raw_data = sample.get("data")
@@ -803,7 +820,6 @@ class Scanner:
             epos = self.phoming.probing_move(self.mcu_probe, target, speed)
         self.last_touch_trigger_height = float(epos[2])
         self.last_touch_actual_height = self._touch_slope_peak_z(samples)
-        epos[2] = self.last_touch_actual_height
         return epos
 
     def _touch_slope_peak_z(self, samples):
@@ -900,7 +916,14 @@ class Scanner:
                 cmd = "M109 S" + str(self.extruder_target)
                 self.gcode.run_script_from_command(cmd)
 
-    def run_touch_probe(self, gcmd, sample_count=None, next_xy=None, next_speed=None):
+    def run_touch_probe(
+        self,
+        gcmd,
+        sample_count=None,
+        next_xy=None,
+        next_speed=None,
+        debug_file=None,
+    ):
         speed = gcmd.get_float(
             "PROBE_SPEED", self.scanner_touch_config["speed"], above=0.0
         )
@@ -936,17 +959,17 @@ class Scanner:
         probexy = self.printer.lookup_object("toolhead").get_position()[:2]
         retries = 0
         positions = []
-        trigger_positions = []
+        calculated_positions = []
         curtime = self.printer.get_reactor().monotonic()
         max_accel = self.toolhead.get_status(curtime)["max_accel"]
         try:
             self.set_accel(self.scanner_touch_config["accel"])
             while len(positions) < sample_count:
                 # Probe position
-                pos = self.touch_probe(speed)
+                pos = self.touch_probe(speed, debug_file=debug_file)
                 positions.append(pos)
-                trigger_positions.append(
-                    [pos[0], pos[1], self.last_touch_trigger_height]
+                calculated_positions.append(
+                    [pos[0], pos[1], self.last_touch_actual_height]
                 )
                 # Check samples tolerance
                 z_positions = [p[2] for p in positions]
@@ -958,7 +981,7 @@ class Scanner:
                     gcmd.respond_info("Probe samples exceed tolerance. Retrying...")
                     retries += 1
                     positions = []
-                    trigger_positions = []
+                    calculated_positions = []
                 # Retract to the current point between samples. The final
                 # retract can move toward the next Touch Mesh coordinate.
                 if len(positions) < sample_count:
@@ -984,15 +1007,16 @@ class Scanner:
             self.set_accel(max_accel)
             self.trigger_method = 0
         # Calculate and return result
-        self.last_touch_trigger_median_height = self._calc_median(trigger_positions)[2]
-        self.last_touch_actual_median_height = self._calc_median(positions)[2]
+        self.last_touch_trigger_median_height = self._calc_median(positions)[2]
+        self.last_touch_actual_median_height = self._calc_median(calculated_positions)[2]
         if samples_result == "median":
             result = self._calc_median(positions)
             self.last_touch_trigger_height = self.last_touch_trigger_median_height
+            self.last_touch_actual_height = self.last_touch_actual_median_height
         else:
             result = self._calc_mean(positions)
-            self.last_touch_trigger_height = self._calc_mean(trigger_positions)[2]
-        self.last_touch_actual_height = result[2]
+            self.last_touch_trigger_height = result[2]
+            self.last_touch_actual_height = self._calc_mean(calculated_positions)[2]
         return result
 
     def probe_calibrate_finalize(self, kin_pos):
@@ -1034,14 +1058,33 @@ class Scanner:
             self.check_temp(gcmd)
             self._move([touch_location_x, touch_location_y, None], 40)
             self.toolhead.wait_moves()
-            curpos = self.run_touch_probe(gcmd)
+            debug_file = None
+            debug_path = None
+            if gcmd.get_int("DEBUG", 0, minval=0, maxval=1):
+                debug_index = 0
+                while debug_file is None:
+                    debug_path = "/tmp/data%d.csv" % debug_index
+                    try:
+                        debug_file = open(debug_path, "x")
+                    except FileExistsError:
+                        debug_index += 1
+                debug_file.write(
+                    "time,data,data_smooth,freq,dist,temp,pos_x,pos_y,pos_z\n"
+                )
+            try:
+                curpos = self.run_touch_probe(gcmd, debug_file=debug_file)
+            finally:
+                if debug_file is not None:
+                    debug_file.close()
+            if debug_path is not None:
+                gcmd.respond_info("Touch stream saved to %s" % debug_path)
             gcmd.respond_info(
-                "probe at %.3f,%.3f is z=%.6f (trigger_z=%.6f, median)"
+                "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f, median)"
                 % (
                     curpos[0],
                     curpos[1],
-                    self.last_touch_actual_median_height,
                     self.last_touch_trigger_median_height,
+                    self.last_touch_actual_median_height,
                 )
             )
             gcode_move = self.printer.lookup_object("gcode_move")
@@ -3064,8 +3107,9 @@ class StreamingHelper:
     def stop(self):
         if not self in self.scanner._stream_callbacks:
             return
-        del self.scanner._stream_callbacks[self]
+        # Flush buffered MCU samples while this callback remains registered.
         self.scanner._stop_streaming()
+        del self.scanner._stream_callbacks[self]
         if self.latency_key is not None:
             self.scanner.drop_stream_latency_request(self.latency_key)
         if self.completion_cb is not None:
