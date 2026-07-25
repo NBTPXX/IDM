@@ -142,18 +142,26 @@ class Scanner:
                         "zero_reference_position"
                     ).split(",")
             else:
-                if mesh_config.get("mesh_radius", None) is not None:
-                    use_x, use_y = mesh_config.getfloatlist(
-                        "mesh_origin", [0.0, 0.0], count=2
+                if config.get("scanner_touch_location", None) is not None:
+                    self.touch_location = config.get("scanner_touch_location").split(
+                        ","
                     )
                 else:
-                    min_x, min_y = mesh_config.getfloatlist("mesh_min", count=2)
-                    max_x, max_y = mesh_config.getfloatlist("mesh_max", count=2)
-                    use_x = (min_x + max_x) / 2.0
-                    use_y = (min_y + max_y) / 2.0
-                raise self.printer.command_error(
-                    f"Please update your [bed_mesh] section to include zero_reference_position: {use_x:.2f},{use_y:.2f} in printer.cfg.\nPlease read the manual"
-                )
+                    if mesh_config.get("mesh_radius", None) is not None:
+                        use_x, use_y = mesh_config.getfloatlist(
+                            "mesh_origin", [0.0, 0.0], count=2
+                        )
+                    else:
+                        min_x, min_y = mesh_config.getfloatlist("mesh_min", count=2)
+                        max_x, max_y = mesh_config.getfloatlist("mesh_max", count=2)
+                        use_x = (min_x + max_x) / 2.0
+                        use_y = (min_y + max_y) / 2.0
+                    self.touch_location = [use_x, use_y]
+                    logging.info(
+                        "[bed_mesh] zero_reference_position is unset; using %.2f,%.2f for Scanner Touch",
+                        use_x,
+                        use_y,
+                    )
 
         atypes = {"median": "median", "average": "average"}
         self.samples_config = {
@@ -219,7 +227,7 @@ class Scanner:
             "move_speed": config.getfloat("scanner_touch_move_speed", 50, minval=1),
             "calibrate": config.getfloat("scanner_touch_calibrate", 0),
             "z_offset": config.getfloat(
-                "scanner_touch_z_offset", config.getfloat("z_offset", 0.05)
+                "scanner_touch_z_offset", config.getfloat("z_offset", 0.15)
             ),
             "threshold": config.getint("scanner_touch_threshold", 2500),
             "max_temp": config.getfloat("scanner_touch_max_temp", 150),
@@ -649,7 +657,13 @@ class Scanner:
                 )
 
                 try:
-                    probe_position = self._touch_move(homing_position, speed)
+                    probe_position = self._touch_move_with_slope_peak(
+                        homing_position,
+                        speed,
+                        retract_dist,
+                        retract_speed,
+                        z_max,
+                    )
                 except self.printer.command_error as e:
                     if self.printer.is_shutdown():
                         self.trigger_method = 0
@@ -659,11 +673,6 @@ class Scanner:
                     raise
                 finally:
                     self.set_accel(max_accel)
-
-                retract_position = self.toolhead.get_position()[:]
-                retract_position[2] = min(retract_position[2] + retract_dist, z_max)
-                self.toolhead.move(retract_position, retract_speed)
-                self.toolhead.dwell(1.0)
 
                 samples.append(probe_position[2])
                 gcmd.respond_info(
@@ -740,7 +749,7 @@ class Scanner:
                     kinematics.clear_homing_state([2])
             raise
 
-    def touch_probe(self, speed, skip=0, verbose=True):
+    def touch_probe(self, speed, skip=0, verbose=True, use_stream=True):
         skipped_msg = ""
         toolhead = self.printer.lookup_object("toolhead")
         curtime = self.printer.get_reactor().monotonic()
@@ -750,7 +759,10 @@ class Scanner:
         pos = toolhead.get_position()
         pos[2] = status["axis_minimum"][2]
         try:
-            epos = self._touch_move(pos, speed)
+            if use_stream:
+                epos = self._touch_move_with_slope_peak(pos, speed)
+            else:
+                epos = self._touch_move(pos, speed)
             epos[2] += self.offset["z"]
             self.last_touch_trigger_height += self.offset["z"]
             self.last_touch_actual_height += self.offset["z"]
@@ -826,6 +838,31 @@ class Scanner:
         self.last_touch_trigger_height = float(epos[2])
         self.last_touch_actual_height = float(epos[2])
         return epos
+
+    def _touch_move_with_slope_peak(
+        self, target, speed, retract_dist=None, retract_speed=None, z_max=None
+    ):
+        if retract_dist is None:
+            retract_dist = self.scanner_touch_config["retract_dist"]
+        if retract_speed is None:
+            retract_speed = self.scanner_touch_config["retract_speed"]
+        if z_max is None:
+            curtime = self.printer.get_reactor().monotonic()
+            z_max = self.toolhead.get_kinematics().get_status(curtime)[
+                "axis_maximum"
+            ][2]
+
+        samples = []
+        with self.streaming_session(self._capture_touch_sample(samples), latency=1):
+            epos = self.phoming.probing_move(self.mcu_probe, target, speed)
+            retract_position = self.toolhead.get_position()[:]
+            retract_position[2] = min(retract_position[2] + retract_dist, z_max)
+            self.toolhead.manual_move(retract_position, retract_speed)
+            self.toolhead.dwell(1.0)
+            self.toolhead.wait_moves()
+        self.last_touch_trigger_height = float(epos[2])
+        self.last_touch_actual_height = self._touch_slope_peak_z(samples)
+        return [epos[0], epos[1], self.last_touch_actual_height]
 
     def _touch_slope_peak_z(self, samples):
         if len(samples) < TOUCH_MOVING_AVERAGE_WINDOW:
@@ -2163,6 +2200,7 @@ class Scanner:
                     lift_speed,
                     debug,
                     best_threshold_range,
+                    use_stream=False,
                 )
                 if (
                     result.range_value <= range_value
@@ -2188,6 +2226,7 @@ class Scanner:
                         lift_speed,
                         debug,
                         best_threshold_range,
+                        use_stream=False,
                     )
                     gcmd.respond_info(
                         "Threshold verification: threshold value %d, threshold quality: %r,  maximum %.6f, minimum %.6f, range %.6f, "
@@ -2629,6 +2668,7 @@ class Scanner:
         lift_speed,
         verbose=True,
         abort_range=float("inf"),
+        use_stream=True,
     ):
         pos = self.toolhead.get_position()
 
@@ -2662,11 +2702,11 @@ class Scanner:
                     self.set_accel(self.scanner_touch_config["accel"])
                     if len(positions) < skip_samples:
                         pos = self.touch_probe(
-                            speed, skip=1, verbose=verbose
+                            speed, skip=1, verbose=verbose, use_stream=use_stream
                         )  # Pass skip=1 if sample is skipped
                     else:
                         pos = self.touch_probe(
-                            speed, skip=0, verbose=verbose
+                            speed, skip=0, verbose=verbose, use_stream=use_stream
                         )  # Normal probe
                 except Exception as e:
                     toolhead = self.printer.lookup_object("toolhead")
