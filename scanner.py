@@ -831,7 +831,7 @@ class Scanner:
         )
         slopes = np.gradient(smoothed, times)
         peak_index = int(np.argmax(np.abs(slopes)))
-        return zs[peak_index]
+        return float(zs[peak_index])
 
     def _calc_median(self, positions):
         z_sorted = sorted(positions, key=(lambda p: p[2]))
