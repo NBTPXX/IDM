@@ -861,7 +861,13 @@ class Scanner:
         smoothed_times = times[window - 1 :]
         smoothed_zs = zs[window - 1 :]
         slopes = np.gradient(smoothed, smoothed_times)
-        peak_index = int(np.argmax(np.abs(slopes)))
+        z_speed = np.gradient(smoothed_zs, smoothed_times)
+        descent_indices = np.flatnonzero(z_speed < -1.0)
+        if not len(descent_indices):
+            raise self.printer.command_error(
+                "Touch slope analysis requires Scanner samples from a descending move"
+            )
+        peak_index = int(descent_indices[np.argmax(np.abs(slopes[descent_indices]))])
         return float(smoothed_zs[peak_index])
 
     def _calc_median(self, positions):
