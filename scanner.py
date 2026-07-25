@@ -2290,8 +2290,6 @@ class Scanner:
                     best_threshold = current_threshold
                     best_threshold_range = result.range_value
                     if best_threshold_range <= target:
-                        if best_threshold != original_threshold:
-                            self._save_threshold(best_threshold)
                         break
 
                 current_threshold += step
@@ -2305,6 +2303,7 @@ class Scanner:
                 )
             )
             if best_threshold_range <= target:
+                self._save_threshold(best_threshold)
                 gcmd.respond_info(
                     "Saved threshold value %d as it is better than target %.3f \nRun SAVE_CONFIG to save this to your printer.cfg and restart"
                     % (best_threshold, target)
