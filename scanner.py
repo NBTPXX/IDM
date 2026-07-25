@@ -53,6 +53,8 @@ from clocksync import SecondarySync
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
 STREAM_TIMEOUT = 2.0
+TOUCH_SAVGOL_WINDOW = 151
+TOUCH_SAVGOL_POLYORDER = 3
 
 REG_THRESH_TOUCH = 0x1D
 REG_DUR = 0x21
@@ -644,8 +646,8 @@ class Scanner:
                 )
 
                 try:
-                    probe_position = self.phoming.probing_move(
-                        self.mcu_probe, homing_position, speed
+                    probe_position = self._touch_move_with_slope_peak(
+                        homing_position, speed
                     )
                 except self.printer.command_error as e:
                     if self.printer.is_shutdown():
@@ -747,7 +749,7 @@ class Scanner:
         pos = toolhead.get_position()
         pos[2] = status["axis_minimum"][2]
         try:
-            epos = self.phoming.probing_move(self.mcu_probe, pos, speed)
+            epos = self._touch_move_with_slope_peak(pos, speed)
             epos[2] += self.offset["z"]
         except self.printer.command_error as e:
             reason = str(e)
@@ -762,6 +764,74 @@ class Scanner:
                 % (epos[0], epos[1], epos[2], skipped_msg)
             )
         return epos[:3]
+
+    def _touch_move_with_slope_peak(self, target, speed):
+        samples = []
+
+        def capture(sample):
+            pos = sample.get("pos")
+            dist = sample.get("dist")
+            raw_data = sample.get("data")
+            sample_time = sample.get("time")
+            if (
+                pos is not None
+                and len(pos) >= 3
+                and dist is not None
+                and raw_data is not None
+                and sample_time is not None
+                and math.isfinite(dist)
+                and math.isfinite(raw_data)
+                and math.isfinite(sample_time)
+                and math.isfinite(pos[2])
+            ):
+                samples.append((sample_time, pos[2], raw_data))
+
+        # One-sample latency keeps the callback active for the complete move.
+        with self.streaming_session(capture, latency=1):
+            epos = self.phoming.probing_move(self.mcu_probe, target, speed)
+        epos[2] = self._touch_slope_peak_z(samples)
+        return epos
+
+    def _touch_slope_peak_z(self, samples):
+        if len(samples) < TOUCH_SAVGOL_WINDOW:
+            raise self.printer.command_error(
+                "Touch slope analysis requires at least %d valid Scanner samples"
+                % TOUCH_SAVGOL_WINDOW
+            )
+
+        points = np.asarray(samples, dtype=float)
+        times = points[:, 0]
+        zs = points[:, 1]
+        raw_data = points[:, 2]
+        keep = [0]
+        for index in range(1, len(times)):
+            if times[index] > times[keep[-1]]:
+                keep.append(index)
+        times = times[keep]
+        zs = zs[keep]
+        raw_data = raw_data[keep]
+        if len(times) < TOUCH_SAVGOL_WINDOW:
+            raise self.printer.command_error(
+                "Touch slope analysis requires %d ordered Scanner samples"
+                % TOUCH_SAVGOL_WINDOW
+            )
+
+        try:
+            savgol_filter = importlib.import_module("scipy.signal").savgol_filter
+        except ImportError as error:
+            raise self.printer.command_error(
+                "Touch slope analysis requires scipy.signal.savgol_filter"
+            ) from error
+
+        smoothed = savgol_filter(
+            raw_data,
+            TOUCH_SAVGOL_WINDOW,
+            TOUCH_SAVGOL_POLYORDER,
+            mode="interp",
+        )
+        slopes = np.gradient(smoothed, times)
+        peak_index = int(np.argmax(np.abs(slopes)))
+        return zs[peak_index]
 
     def _calc_median(self, positions):
         z_sorted = sorted(positions, key=(lambda p: p[2]))
