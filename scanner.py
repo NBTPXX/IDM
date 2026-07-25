@@ -227,6 +227,8 @@ class Scanner:
         }
         self.gcode = self.printer.lookup_object("gcode")
         self.probe_calibrate_z = 0.0
+        self.last_touch_trigger_height = None
+        self.last_touch_actual_height = None
 
         if config.getint("detect_threshold_z", None) is not None:
             raise self.printer.command_error(
@@ -751,6 +753,8 @@ class Scanner:
         try:
             epos = self._touch_move_with_slope_peak(pos, speed)
             epos[2] += self.offset["z"]
+            self.last_touch_trigger_height += self.offset["z"]
+            self.last_touch_actual_height = epos[2]
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -789,7 +793,9 @@ class Scanner:
         # One-sample latency keeps the callback active for the complete move.
         with self.streaming_session(capture, latency=1):
             epos = self.phoming.probing_move(self.mcu_probe, target, speed)
-        epos[2] = self._touch_slope_peak_z(samples)
+        self.last_touch_trigger_height = float(epos[2])
+        self.last_touch_actual_height = self._touch_slope_peak_z(samples)
+        epos[2] = self.last_touch_actual_height
         return epos
 
     def _touch_slope_peak_z(self, samples):
@@ -922,6 +928,7 @@ class Scanner:
         probexy = self.printer.lookup_object("toolhead").get_position()[:2]
         retries = 0
         positions = []
+        trigger_positions = []
         curtime = self.printer.get_reactor().monotonic()
         max_accel = self.toolhead.get_status(curtime)["max_accel"]
         try:
@@ -930,6 +937,9 @@ class Scanner:
                 # Probe position
                 pos = self.touch_probe(speed)
                 positions.append(pos)
+                trigger_positions.append(
+                    [pos[0], pos[1], self.last_touch_trigger_height]
+                )
                 # Check samples tolerance
                 z_positions = [p[2] for p in positions]
                 if max(z_positions) - min(z_positions) > samples_tolerance:
@@ -940,6 +950,7 @@ class Scanner:
                     gcmd.respond_info("Probe samples exceed tolerance. Retrying...")
                     retries += 1
                     positions = []
+                    trigger_positions = []
                 # Retract to the current point between samples. The final
                 # retract can move toward the next Touch Mesh coordinate.
                 if len(positions) < sample_count:
@@ -966,8 +977,13 @@ class Scanner:
             self.trigger_method = 0
         # Calculate and return result
         if samples_result == "median":
-            return self._calc_median(positions)
-        return self._calc_mean(positions)
+            result = self._calc_median(positions)
+            self.last_touch_trigger_height = self._calc_median(trigger_positions)[2]
+        else:
+            result = self._calc_mean(positions)
+            self.last_touch_trigger_height = self._calc_mean(trigger_positions)[2]
+        self.last_touch_actual_height = result[2]
+        return result
 
     def probe_calibrate_finalize(self, kin_pos):
         if kin_pos is None:
@@ -1009,6 +1025,15 @@ class Scanner:
             self._move([touch_location_x, touch_location_y, None], 40)
             self.toolhead.wait_moves()
             curpos = self.run_touch_probe(gcmd)
+            gcmd.respond_info(
+                "probe at %.3f,%.3f is z=%.6f (trigger_z=%.6f)"
+                % (
+                    curpos[0],
+                    curpos[1],
+                    self.last_touch_actual_height,
+                    self.last_touch_trigger_height,
+                )
+            )
             gcode_move = self.printer.lookup_object("gcode_move")
             offset = gcode_move.get_status()["homing_origin"].z
             self.probe_calibrate_z = offset - curpos[2]
