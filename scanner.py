@@ -229,6 +229,8 @@ class Scanner:
         self.probe_calibrate_z = 0.0
         self.last_touch_trigger_height = None
         self.last_touch_actual_height = None
+        self.last_touch_trigger_median_height = None
+        self.last_touch_actual_median_height = None
 
         if config.getint("detect_threshold_z", None) is not None:
             raise self.printer.command_error(
@@ -764,8 +766,14 @@ class Scanner:
             if skip == 1:
                 skipped_msg = " - SKIPPED - result not added"
             self.gcode.respond_info(
-                "probe at %.3f,%.3f is z=%.6f %s"
-                % (epos[0], epos[1], epos[2], skipped_msg)
+                "probe at %.3f,%.3f is z=%.6f (trigger_z=%.6f)%s"
+                % (
+                    epos[0],
+                    epos[1],
+                    epos[2],
+                    self.last_touch_trigger_height,
+                    skipped_msg,
+                )
             )
         return epos[:3]
 
@@ -976,9 +984,11 @@ class Scanner:
             self.set_accel(max_accel)
             self.trigger_method = 0
         # Calculate and return result
+        self.last_touch_trigger_median_height = self._calc_median(trigger_positions)[2]
+        self.last_touch_actual_median_height = self._calc_median(positions)[2]
         if samples_result == "median":
             result = self._calc_median(positions)
-            self.last_touch_trigger_height = self._calc_median(trigger_positions)[2]
+            self.last_touch_trigger_height = self.last_touch_trigger_median_height
         else:
             result = self._calc_mean(positions)
             self.last_touch_trigger_height = self._calc_mean(trigger_positions)[2]
@@ -1026,12 +1036,12 @@ class Scanner:
             self.toolhead.wait_moves()
             curpos = self.run_touch_probe(gcmd)
             gcmd.respond_info(
-                "probe at %.3f,%.3f is z=%.6f (trigger_z=%.6f)"
+                "probe at %.3f,%.3f is z=%.6f (trigger_z=%.6f, median)"
                 % (
                     curpos[0],
                     curpos[1],
-                    self.last_touch_actual_height,
-                    self.last_touch_trigger_height,
+                    self.last_touch_actual_median_height,
+                    self.last_touch_trigger_median_height,
                 )
             )
             gcode_move = self.printer.lookup_object("gcode_move")
