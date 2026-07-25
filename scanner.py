@@ -1075,13 +1075,13 @@ class Scanner:
         self.last_touch_trigger_median_height = self._calc_median(positions)[2]
         self.last_touch_actual_median_height = self._calc_median(calculated_positions)[2]
         if samples_result == "median":
-            result = self._calc_median(positions)
+            result = self._calc_median(calculated_positions)
             self.last_touch_trigger_height = self.last_touch_trigger_median_height
             self.last_touch_actual_height = self.last_touch_actual_median_height
         else:
-            result = self._calc_mean(positions)
-            self.last_touch_trigger_height = result[2]
-            self.last_touch_actual_height = self._calc_mean(calculated_positions)[2]
+            result = self._calc_mean(calculated_positions)
+            self.last_touch_trigger_height = self._calc_mean(positions)[2]
+            self.last_touch_actual_height = result[2]
         return result
 
     def probe_calibrate_finalize(self, kin_pos):
