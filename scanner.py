@@ -868,7 +868,31 @@ class Scanner:
                 "Touch slope analysis requires Scanner samples from a descending move"
             )
         peak_index = int(descent_indices[np.argmax(np.abs(slopes[descent_indices]))])
-        return float(smoothed_zs[peak_index])
+
+        reverse_times = times[-1] - times[::-1]
+        reverse_zs = zs[::-1]
+        reverse_data = raw_data[::-1]
+        reverse_smoothed = np.convolve(
+            reverse_data, np.ones(window) / window, mode="valid"
+        )
+        reverse_smoothed_times = reverse_times[window - 1 :]
+        reverse_smoothed_zs = reverse_zs[window - 1 :]
+        reverse_slopes = np.gradient(reverse_smoothed, reverse_smoothed_times)
+        reverse_z_speed = np.gradient(reverse_smoothed_zs, reverse_smoothed_times)
+        reverse_descent_indices = np.flatnonzero(reverse_z_speed < -1.0)
+        if not len(reverse_descent_indices):
+            raise self.printer.command_error(
+                "Touch slope analysis requires Scanner samples from a reverse descending move"
+            )
+        reverse_peak_index = int(
+            reverse_descent_indices[
+                np.argmax(np.abs(reverse_slopes[reverse_descent_indices]))
+            ]
+        )
+        return float(
+            (smoothed_zs[peak_index] + reverse_smoothed_zs[reverse_peak_index])
+            / 2.0
+        )
 
     def _calc_median(self, positions):
         z_sorted = sorted(positions, key=(lambda p: p[2]))
@@ -1107,11 +1131,10 @@ class Scanner:
             debug = gcmd.get_int("DEBUG", 0, minval=0, maxval=1) == 1
             curpos = self.run_touch_probe(gcmd, debug=debug)
             gcmd.respond_info(
-                "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f, median)"
+                "probe at %.3f,%.3f, median z=%.6f"
                 % (
                     curpos[0],
                     curpos[1],
-                    self.last_touch_trigger_median_height,
                     self.last_touch_actual_median_height,
                 )
             )
