@@ -227,7 +227,7 @@ class Scanner:
             "move_speed": config.getfloat("scanner_touch_move_speed", 50, minval=1),
             "calibrate": config.getfloat("scanner_touch_calibrate", 0),
             "z_offset": config.getfloat(
-                "scanner_touch_z_offset", config.getfloat("z_offset", 0.15)
+                "scanner_touch_z_offset", config.getfloat("z_offset", 0.05)
             ),
             "threshold": config.getint("scanner_touch_threshold", 2500),
             "max_temp": config.getfloat("scanner_touch_max_temp", 150),
@@ -3982,6 +3982,8 @@ class ScannerMeshHelper:
         scanner_at_touch = [[None] * self.touch_res_x for _ in range(self.touch_res_y)]
         touch_step_x = (self.max_x - self.min_x) / (self.touch_res_x - 1)
         touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
+        xo = self.scanner.offset["x"]
+        yo = self.scanner.offset["y"]
         touch_indices = (
             mesh_probe_indices(self.touch_res_x, self.touch_res_y, circular=True)
             if self.is_round
@@ -4006,7 +4008,7 @@ class ScannerMeshHelper:
             for point_index, (xi, yi, x, y) in enumerate(touch_points):
                 if point_index == 0:
                     self.scanner._zhop()
-                    toolhead.manual_move([x, y, None], speed)
+                    toolhead.manual_move([x - xo, y - yo, None], speed)
                 toolhead.wait_moves()
                 scanner_value = interpolate_matrix(
                     scanner_matrix,
@@ -4024,7 +4026,8 @@ class ScannerMeshHelper:
                 # run_touch_probe restores scan mode after every point.
                 self.scanner.trigger_method = 1
                 next_xy = (
-                    list(touch_points[point_index + 1][2:4])
+                    [touch_points[point_index + 1][2] - xo,
+                     touch_points[point_index + 1][3] - yo]
                     if point_index + 1 < len(touch_points)
                     else None
                 )
@@ -4070,11 +4073,12 @@ class ScannerMeshHelper:
             for retry_index, (xi, yi, x, y) in enumerate(retry_points):
                 if retry_index == 0:
                     self.scanner._zhop()
-                    toolhead.manual_move([x, y, None], speed)
+                    toolhead.manual_move([x - xo, y - yo, None], speed)
                 toolhead.wait_moves()
                 self.scanner.trigger_method = 1
                 next_xy = (
-                    list(retry_points[retry_index + 1][2:4])
+                    [retry_points[retry_index + 1][2] - xo,
+                     retry_points[retry_index + 1][3] - yo]
                     if retry_index + 1 < len(retry_points)
                     else None
                 )
@@ -4096,14 +4100,35 @@ class ScannerMeshHelper:
             self.min_y,
             self.max_y,
         )
-        compensation = difference_matrix(aligned_touch, aligned_scanner)
+        touch_diff = difference_matrix(aligned_touch, aligned_scanner)
+        compensation = []
+        scanner_step_x = (self.max_x - self.min_x) / (self.res_x - 1)
+        scanner_step_y = (self.max_y - self.min_y) / (self.res_y - 1)
+        for yi in range(self.res_y):
+            y = self.min_y + yi * scanner_step_y
+            row = []
+            for xi in range(self.res_x):
+                x = self.min_x + xi * scanner_step_x
+                correction = interpolate_matrix(
+                    touch_diff,
+                    self.min_x,
+                    self.max_x,
+                    self.min_y,
+                    self.max_y,
+                    self.touch_res_x,
+                    self.touch_res_y,
+                    x,
+                    y,
+                )
+                row.append(correction if correction is not None else 0.0)
+            compensation.append(row)
         profile = CompensationProfile(
             self.min_x,
             self.max_x,
             self.min_y,
             self.max_y,
-            self.touch_res_x,
-            self.touch_res_y,
+            self.res_x,
+            self.res_y,
             compensation,
         )
         profile.save(self.scanner.printer.lookup_object("configfile"))
