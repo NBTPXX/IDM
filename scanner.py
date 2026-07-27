@@ -811,7 +811,7 @@ class Scanner:
                 % (
                     epos[0],
                     epos[1],
-                    epos[2],
+                    self.last_touch_trigger_height,
                     self.last_touch_actual_height,
                     skipped_msg,
                 )
