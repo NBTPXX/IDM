@@ -233,7 +233,8 @@ class Scanner:
         self.touch_dur = config.getfloat("touch_dur", 0.01, above=DUR_SCALE, maxval=0.1)
         self.adxl345 = None
 
-        self.calibration_method = config.get("calibration_method", "scan")
+        self.default_calibration_method = config.get("calibration_method", "scan")
+        self.calibration_method = self.default_calibration_method
         self.trigger_method = 0
 
         self.trigger_distance = config.getfloat("trigger_distance", 2.0)
@@ -2151,7 +2152,7 @@ class Scanner:
     def cmd_PROBE_SWITCH(self, gcmd):
         method = gcmd.get("METHOD", "NONE").lower()
         if method == "scan":
-            self.calibration_method = "scan"
+            self.calibration_method = self.default_calibration_method
             self.trigger_method = 0
             gcmd.respond_info("Method switched to SCAN")
         elif method == "touch":
