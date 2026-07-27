@@ -53,7 +53,39 @@ from clocksync import SecondarySync
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
 STREAM_TIMEOUT = 2.0
-TOUCH_MOVING_AVERAGE_WINDOW = 25
+TOUCH_SAVGOL_WINDOW = 25
+# Centered Savitzky-Golay smoothing coefficients for window=25, polyorder=3.
+# Keeping them local avoids making Touch peak detection depend on SciPy.
+TOUCH_SAVGOL_COEFFICIENTS = np.array(
+    [
+        -0.0488888888888888,
+        -0.0266666666666667,
+        -0.0063768115942030,
+        0.0119806763285023,
+        0.0284057971014492,
+        0.0428985507246376,
+        0.0554589371980675,
+        0.0660869565217390,
+        0.0747826086956520,
+        0.0815458937198066,
+        0.0863768115942027,
+        0.0892753623188404,
+        0.0902415458937197,
+        0.0892753623188404,
+        0.0863768115942027,
+        0.0815458937198066,
+        0.0747826086956520,
+        0.0660869565217390,
+        0.0554589371980675,
+        0.0428985507246376,
+        0.0284057971014492,
+        0.0119806763285023,
+        -0.0063768115942030,
+        -0.0266666666666667,
+        -0.0488888888888888,
+    ],
+    dtype=float,
+)
 
 REG_THRESH_TOUCH = 0x1D
 REG_DUR = 0x21
@@ -865,10 +897,11 @@ class Scanner:
         return [epos[0], epos[1], self.last_touch_actual_height]
 
     def _touch_slope_peak_z(self, samples):
-        if len(samples) < TOUCH_MOVING_AVERAGE_WINDOW:
+        minimum_samples = TOUCH_SAVGOL_WINDOW + 1
+        if len(samples) < minimum_samples:
             raise self.printer.command_error(
                 "Touch slope analysis requires at least %d valid Scanner samples"
-                % TOUCH_MOVING_AVERAGE_WINDOW
+                % minimum_samples
             )
 
         points = np.asarray(samples, dtype=float)
@@ -882,16 +915,16 @@ class Scanner:
         times = times[keep]
         zs = zs[keep]
         raw_data = raw_data[keep]
-        if len(times) < TOUCH_MOVING_AVERAGE_WINDOW:
+        if len(times) < minimum_samples:
             raise self.printer.command_error(
                 "Touch slope analysis requires %d ordered Scanner samples"
-                % TOUCH_MOVING_AVERAGE_WINDOW
+                % minimum_samples
             )
 
-        window = TOUCH_MOVING_AVERAGE_WINDOW
-        smoothed = np.convolve(raw_data, np.ones(window) / window, mode="valid")
-        smoothed_times = times[window - 1 :]
-        smoothed_zs = zs[window - 1 :]
+        half_window = TOUCH_SAVGOL_WINDOW // 2
+        smoothed = np.convolve(raw_data, TOUCH_SAVGOL_COEFFICIENTS, mode="valid")
+        smoothed_times = times[half_window:-half_window]
+        smoothed_zs = zs[half_window:-half_window]
         slopes = np.gradient(smoothed, smoothed_times)
         z_speed = np.gradient(smoothed_zs, smoothed_times)
         descent_indices = np.flatnonzero(z_speed < -1.0)
@@ -905,10 +938,10 @@ class Scanner:
         reverse_zs = zs[::-1]
         reverse_data = raw_data[::-1]
         reverse_smoothed = np.convolve(
-            reverse_data, np.ones(window) / window, mode="valid"
+            reverse_data, TOUCH_SAVGOL_COEFFICIENTS, mode="valid"
         )
-        reverse_smoothed_times = reverse_times[window - 1 :]
-        reverse_smoothed_zs = reverse_zs[window - 1 :]
+        reverse_smoothed_times = reverse_times[half_window:-half_window]
+        reverse_smoothed_zs = reverse_zs[half_window:-half_window]
         reverse_slopes = np.gradient(reverse_smoothed, reverse_smoothed_times)
         reverse_z_speed = np.gradient(reverse_smoothed_zs, reverse_smoothed_times)
         reverse_descent_indices = np.flatnonzero(reverse_z_speed < -1.0)
