@@ -1,0 +1,26 @@
+name: Sync from Gitee
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-from-gitee
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sync master and develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone --bare https://gitee.com/NBTP/IDM.git source.git
+          git -C source.git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/heads/master:refs/heads/master refs/heads/develop:refs/heads/develop
+
