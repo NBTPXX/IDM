@@ -3428,6 +3428,8 @@ class ScannerEndstopWrapper:
         )
         self.z_homed = False
         self.is_homing = False
+        self._homing_trigger_method = 0
+        self._home_rails_active = False
 
     def _handle_mcu_identify(self):
         self.toolhead = self.scanner.printer.lookup_object("toolhead")
@@ -3440,8 +3442,13 @@ class ScannerEndstopWrapper:
 
     def _handle_home_rails_begin(self, homing_state, rails):
         self.is_homing = False
+        self._homing_trigger_method = self.scanner.trigger_method
+        self._home_rails_active = True
 
     def _handle_home_rails_end(self, homing_state, rails):
+        if self._home_rails_active and self.is_homing:
+            self.scanner.trigger_method = self._homing_trigger_method
+        self._home_rails_active = False
         if self.scanner.model is None and self.scanner.trigger_method == 0:
             return
 
@@ -3527,6 +3534,8 @@ class ScannerEndstopWrapper:
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
+        if self._home_rails_active:
+            self.scanner.trigger_method = self._homing_trigger_method
         self._require_hardware_probe()
         if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
             self.is_homing = True
@@ -3575,6 +3584,8 @@ class ScannerEndstopWrapper:
         return self._trigger_completion
 
     def home_wait(self, home_end_time):
+        if self._home_rails_active:
+            self.scanner.trigger_method = self._homing_trigger_method
         if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
             return self.scanner.endstop_mcu_endstop.home_wait(home_end_time)
         etrsync = self._trsyncs[0]
