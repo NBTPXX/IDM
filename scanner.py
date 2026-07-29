@@ -236,7 +236,7 @@ class Scanner:
 
         self.default_calibration_method = config.get("calibration_method", "scan")
         self.calibration_method = self.default_calibration_method
-        self.trigger_method = self._resting_trigger_method()
+        self.trigger_method = 0
 
         self.trigger_distance = config.getfloat("trigger_distance", 2.0)
         self.trigger_dive_threshold = config.getfloat("trigger_dive_threshold", 1.5)
@@ -998,14 +998,6 @@ class Scanner:
             for message in args:
                 gcmd.respond_info(str(message))
 
-    def _resting_trigger_method(self):
-        return {
-            "scan": 0,
-            "touch": 1,
-            "adxl": 2,
-            "second_probe": 3,
-        }.get(self.calibration_method, 0)
-
     def check_temp(self, gcmd):
         hotend = self.toolhead.get_extruder()
         if hotend is not None:
@@ -1175,8 +1167,8 @@ class Scanner:
                 if debug_path is not None:
                     gcmd.respond_info("Touch stream saved to %s" % debug_path)
         finally:
-            self.trigger_method = 0
             self.set_accel(max_accel)
+            self.trigger_method = 0
         # Calculate and return result
         self.last_touch_trigger_median_height = self._calc_median(positions)[2]
         self.last_touch_actual_median_height = self._calc_median(calculated_positions)[2]
@@ -1301,9 +1293,6 @@ class Scanner:
 
     def _handle_connect(self):
         self.phoming = self.printer.lookup_object("homing")
-        if self.calibration_method == "adxl":
-            self.adxl345 = self.printer.lookup_object("adxl345")
-            self.init_adxl()
         self.mod_axis_twist_comp = self.printer.lookup_object(
             "axis_twist_compensation", None
         )
