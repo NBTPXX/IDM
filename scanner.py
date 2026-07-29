@@ -675,7 +675,19 @@ class Scanner:
         try:
             self.detect_threshold_z = test_threshold
             # Set the initial position for the toolhead
-            self.toolhead.set_position(initial_position, [2])
+            try:
+                self.toolhead.set_position(
+                    initial_position, homing_axes=[2, "z"]
+                )
+            except:
+                try:
+                    self.toolhead.set_position(
+                        initial_position, homing_axes=["z"]
+                    )
+                except:
+                    self.toolhead.set_position(
+                        initial_position, homing_axes=[2]
+                    )
 
             retries = 0
             gcmd.respond_info("Initiating Touch Procedure...")
@@ -691,13 +703,22 @@ class Scanner:
                 )
 
                 try:
-                    probe_position = self._touch_move_with_slope_peak(
-                        homing_position,
-                        speed,
-                        retract_dist,
-                        retract_speed,
-                        z_max,
-                    )
+                    if self.trigger_method in (2, 3):
+                        probe_position = self._external_probe_move(
+                            homing_position,
+                            speed,
+                            retract_dist,
+                            retract_speed,
+                            z_max,
+                        )
+                    else:
+                        probe_position = self._touch_move_with_slope_peak(
+                            homing_position,
+                            speed,
+                            retract_dist,
+                            retract_speed,
+                            z_max,
+                        )
                 except self.printer.command_error as e:
                     if self.printer.is_shutdown():
                         self.trigger_method = 0
@@ -875,19 +896,22 @@ class Scanner:
         self.last_touch_actual_height = float(epos[2])
         return epos
 
-    def _external_probe_move(self, target, speed):
+    def _external_probe_move(
+        self, target, speed, retract_dist=None, retract_speed=None, z_max=None
+    ):
+        if retract_dist is None:
+            retract_dist = self.scanner_touch_config["retract_dist"]
+        if retract_speed is None:
+            retract_speed = self.scanner_touch_config["retract_speed"]
+        if z_max is None:
+            curtime = self.printer.get_reactor().monotonic()
+            z_max = self.toolhead.get_kinematics().get_status(curtime)[
+                "axis_maximum"
+            ][2]
         epos = self._touch_move(target, speed)
-        curtime = self.printer.get_reactor().monotonic()
-        z_max = self.toolhead.get_kinematics().get_status(curtime)[
-            "axis_maximum"
-        ][2]
         retract_position = self.toolhead.get_position()[:]
-        retract_position[2] = min(
-            retract_position[2] + self.scanner_touch_config["retract_dist"], z_max
-        )
-        self.toolhead.manual_move(
-            retract_position, self.scanner_touch_config["retract_speed"]
-        )
+        retract_position[2] = min(retract_position[2] + retract_dist, z_max)
+        self.toolhead.manual_move(retract_position, retract_speed)
         self.toolhead.dwell(1.0)
         self.toolhead.wait_moves()
         return epos
@@ -3402,6 +3426,8 @@ class ScannerEndstopWrapper:
         )
         self.z_homed = False
         self.is_homing = False
+        self._homing_trigger_method = 0
+        self._home_rails_active = False
 
     def _handle_mcu_identify(self):
         self.toolhead = self.scanner.printer.lookup_object("toolhead")
@@ -3414,8 +3440,13 @@ class ScannerEndstopWrapper:
 
     def _handle_home_rails_begin(self, homing_state, rails):
         self.is_homing = False
+        self._homing_trigger_method = self.scanner.trigger_method
+        self._home_rails_active = True
 
     def _handle_home_rails_end(self, homing_state, rails):
+        if self._home_rails_active and self.is_homing:
+            self.scanner.trigger_method = self._homing_trigger_method
+        self._home_rails_active = False
         if self.scanner.model is None and self.scanner.trigger_method == 0:
             return
 
@@ -3501,6 +3532,8 @@ class ScannerEndstopWrapper:
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
+        if self._home_rails_active:
+            self.scanner.trigger_method = self._homing_trigger_method
         self._require_hardware_probe()
         if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
             self.is_homing = True
@@ -3549,6 +3582,8 @@ class ScannerEndstopWrapper:
         return self._trigger_completion
 
     def home_wait(self, home_end_time):
+        if self._home_rails_active:
+            self.scanner.trigger_method = self._homing_trigger_method
         if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
             return self.scanner.endstop_mcu_endstop.home_wait(home_end_time)
         etrsync = self._trsyncs[0]
