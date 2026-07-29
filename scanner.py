@@ -13,6 +13,7 @@
 import threading
 import multiprocessing
 import importlib
+import contextlib
 import traceback
 import logging
 import chelper
@@ -53,6 +54,39 @@ from clocksync import SecondarySync
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
 STREAM_TIMEOUT = 2.0
+TOUCH_SAVGOL_WINDOW = 25
+# Centered Savitzky-Golay smoothing coefficients for window=25, polyorder=3.
+# Keeping them local avoids making Touch peak detection depend on SciPy.
+TOUCH_SAVGOL_COEFFICIENTS = np.array(
+    [
+        -0.0488888888888888,
+        -0.0266666666666667,
+        -0.0063768115942030,
+        0.0119806763285023,
+        0.0284057971014492,
+        0.0428985507246376,
+        0.0554589371980675,
+        0.0660869565217390,
+        0.0747826086956520,
+        0.0815458937198066,
+        0.0863768115942027,
+        0.0892753623188404,
+        0.0902415458937197,
+        0.0892753623188404,
+        0.0863768115942027,
+        0.0815458937198066,
+        0.0747826086956520,
+        0.0660869565217390,
+        0.0554589371980675,
+        0.0428985507246376,
+        0.0284057971014492,
+        0.0119806763285023,
+        -0.0063768115942030,
+        -0.0266666666666667,
+        -0.0488888888888888,
+    ],
+    dtype=float,
+)
 
 REG_THRESH_TOUCH = 0x1D
 REG_DUR = 0x21
@@ -141,13 +175,26 @@ class Scanner:
                         "zero_reference_position"
                     ).split(",")
             else:
-                stepper_x = config.getsection("stepper_x")
-                use_x = stepper_x.getfloat("position_max") / 2
-                stepper_y = config.getsection("stepper_y")
-                use_y = stepper_y.getfloat("position_max") / 2
-                raise self.printer.command_error(
-                    f"Please update your [bed_mesh] section to include zero_reference_position: {use_x:.2f},{use_y:.2f} in printer.cfg.\nPlease read the manual"
-                )
+                if config.get("scanner_touch_location", None) is not None:
+                    self.touch_location = config.get("scanner_touch_location").split(
+                        ","
+                    )
+                else:
+                    if mesh_config.get("mesh_radius", None) is not None:
+                        use_x, use_y = mesh_config.getfloatlist(
+                            "mesh_origin", [0.0, 0.0], count=2
+                        )
+                    else:
+                        min_x, min_y = mesh_config.getfloatlist("mesh_min", count=2)
+                        max_x, max_y = mesh_config.getfloatlist("mesh_max", count=2)
+                        use_x = (min_x + max_x) / 2.0
+                        use_y = (min_y + max_y) / 2.0
+                    self.touch_location = [use_x, use_y]
+                    logging.info(
+                        "[bed_mesh] zero_reference_position is unset; using %.2f,%.2f for Scanner Touch",
+                        use_x,
+                        use_y,
+                    )
 
         atypes = {"median": "median", "average": "average"}
         self.samples_config = {
@@ -187,8 +234,9 @@ class Scanner:
         self.touch_dur = config.getfloat("touch_dur", 0.01, above=DUR_SCALE, maxval=0.1)
         self.adxl345 = None
 
-        self.calibration_method = config.get("calibration_method", "scan")
-        self.trigger_method = 0
+        self.default_calibration_method = config.get("calibration_method", "scan")
+        self.calibration_method = self.default_calibration_method
+        self.trigger_method = self._resting_trigger_method()
 
         self.trigger_distance = config.getfloat("trigger_distance", 2.0)
         self.trigger_dive_threshold = config.getfloat("trigger_dive_threshold", 1.5)
@@ -220,6 +268,10 @@ class Scanner:
         }
         self.gcode = self.printer.lookup_object("gcode")
         self.probe_calibrate_z = 0.0
+        self.last_touch_trigger_height = None
+        self.last_touch_actual_height = None
+        self.last_touch_trigger_median_height = None
+        self.last_touch_actual_median_height = None
 
         if config.getint("detect_threshold_z", None) is not None:
             raise self.printer.command_error(
@@ -639,8 +691,12 @@ class Scanner:
                 )
 
                 try:
-                    probe_position = self.phoming.probing_move(
-                        self.mcu_probe, homing_position, speed
+                    probe_position = self._touch_move_with_slope_peak(
+                        homing_position,
+                        speed,
+                        retract_dist,
+                        retract_speed,
+                        z_max,
                     )
                 except self.printer.command_error as e:
                     if self.printer.is_shutdown():
@@ -651,11 +707,6 @@ class Scanner:
                     raise
                 finally:
                     self.set_accel(max_accel)
-
-                retract_position = self.toolhead.get_position()[:]
-                retract_position[2] = min(retract_position[2] + retract_dist, z_max)
-                self.toolhead.move(retract_position, retract_speed)
-                self.toolhead.dwell(1.0)
 
                 samples.append(probe_position[2])
                 gcmd.respond_info(
@@ -732,7 +783,7 @@ class Scanner:
                     kinematics.clear_homing_state([2])
             raise
 
-    def touch_probe(self, speed, skip=0, verbose=True):
+    def touch_probe(self, speed, skip=0, verbose=True, use_stream=True):
         skipped_msg = ""
         toolhead = self.printer.lookup_object("toolhead")
         curtime = self.printer.get_reactor().monotonic()
@@ -742,8 +793,15 @@ class Scanner:
         pos = toolhead.get_position()
         pos[2] = status["axis_minimum"][2]
         try:
-            epos = self.phoming.probing_move(self.mcu_probe, pos, speed)
+            if self.trigger_method in (2, 3):
+                epos = self._external_probe_move(pos, speed)
+            elif use_stream:
+                epos = self._touch_move_with_slope_peak(pos, speed)
+            else:
+                epos = self._touch_move(pos, speed)
             epos[2] += self.offset["z"]
+            self.last_touch_trigger_height += self.offset["z"]
+            self.last_touch_actual_height += self.offset["z"]
         except self.printer.command_error as e:
             reason = str(e)
             if "Timeout during endstop homing" in reason:
@@ -753,10 +811,174 @@ class Scanner:
             if skip == 1:
                 skipped_msg = " - SKIPPED - result not added"
             self.gcode.respond_info(
-                "probe at %.3f,%.3f is z=%.6f %s"
-                % (epos[0], epos[1], epos[2], skipped_msg)
+                "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f)%s"
+                % (
+                    epos[0],
+                    epos[1],
+                    self.last_touch_trigger_height,
+                    self.last_touch_actual_height,
+                    skipped_msg,
+                )
             )
         return epos[:3]
+
+    def _capture_touch_sample(self, samples, debug_file=None):
+        def capture(sample):
+            if debug_file is not None:
+                pos = sample.get("pos")
+                dist = sample.get("dist")
+                debug_file.write(
+                    "%.4f,%d,%.2f,%.5f,%s,%.2f,%s,%s,%s\n"
+                    % (
+                        sample["time"],
+                        sample["data"],
+                        sample["data_smooth"],
+                        sample["freq"],
+                        "%.5f" % dist if dist is not None else "",
+                        sample["temp"],
+                        "%.3f" % pos[0] if pos is not None else "",
+                        "%.3f" % pos[1] if pos is not None else "",
+                        "%.3f" % pos[2] if pos is not None else "",
+                    )
+                )
+            pos = sample.get("pos")
+            raw_data = sample.get("data")
+            sample_time = sample.get("time")
+            if (
+                pos is not None
+                and len(pos) >= 3
+                and raw_data is not None
+                and sample_time is not None
+                and math.isfinite(raw_data)
+                and math.isfinite(sample_time)
+                and math.isfinite(pos[2])
+            ):
+                samples.append((sample_time, pos[2], raw_data))
+
+        return capture
+
+    def _open_touch_debug_stream(self):
+        debug_index = 0
+        while True:
+            debug_path = "/tmp/data%d.csv" % debug_index
+            try:
+                debug_file = open(debug_path, "x")
+                break
+            except FileExistsError:
+                debug_index += 1
+        debug_file.write("time,data,data_smooth,freq,dist,temp,pos_x,pos_y,pos_z\n")
+        return debug_file, debug_path
+
+    def _touch_move(self, target, speed):
+        epos = self.phoming.probing_move(self.mcu_probe, target, speed)
+        self.last_touch_trigger_height = float(epos[2])
+        self.last_touch_actual_height = float(epos[2])
+        return epos
+
+    def _external_probe_move(self, target, speed):
+        epos = self._touch_move(target, speed)
+        curtime = self.printer.get_reactor().monotonic()
+        z_max = self.toolhead.get_kinematics().get_status(curtime)[
+            "axis_maximum"
+        ][2]
+        retract_position = self.toolhead.get_position()[:]
+        retract_position[2] = min(
+            retract_position[2] + self.scanner_touch_config["retract_dist"], z_max
+        )
+        self.toolhead.manual_move(
+            retract_position, self.scanner_touch_config["retract_speed"]
+        )
+        self.toolhead.dwell(1.0)
+        self.toolhead.wait_moves()
+        return epos
+
+    def _touch_move_with_slope_peak(
+        self, target, speed, retract_dist=None, retract_speed=None, z_max=None
+    ):
+        if retract_dist is None:
+            retract_dist = self.scanner_touch_config["retract_dist"]
+        if retract_speed is None:
+            retract_speed = self.scanner_touch_config["retract_speed"]
+        if z_max is None:
+            curtime = self.printer.get_reactor().monotonic()
+            z_max = self.toolhead.get_kinematics().get_status(curtime)[
+                "axis_maximum"
+            ][2]
+
+        samples = []
+        with self.streaming_session(self._capture_touch_sample(samples), latency=1):
+            epos = self.phoming.probing_move(self.mcu_probe, target, speed)
+            retract_position = self.toolhead.get_position()[:]
+            retract_position[2] = min(retract_position[2] + retract_dist, z_max)
+            self.toolhead.manual_move(retract_position, retract_speed)
+            self.toolhead.dwell(1.0)
+            self.toolhead.wait_moves()
+        self.last_touch_trigger_height = float(epos[2])
+        self.last_touch_actual_height = self._touch_slope_peak_z(samples)
+        return [epos[0], epos[1], self.last_touch_actual_height]
+
+    def _touch_slope_peak_z(self, samples):
+        minimum_samples = TOUCH_SAVGOL_WINDOW + 1
+        if len(samples) < minimum_samples:
+            raise self.printer.command_error(
+                "Touch slope analysis requires at least %d valid Scanner samples"
+                % minimum_samples
+            )
+
+        points = np.asarray(samples, dtype=float)
+        times = points[:, 0]
+        zs = points[:, 1]
+        raw_data = points[:, 2]
+        keep = [0]
+        for index in range(1, len(times)):
+            if times[index] > times[keep[-1]]:
+                keep.append(index)
+        times = times[keep]
+        zs = zs[keep]
+        raw_data = raw_data[keep]
+        if len(times) < minimum_samples:
+            raise self.printer.command_error(
+                "Touch slope analysis requires %d ordered Scanner samples"
+                % minimum_samples
+            )
+
+        half_window = TOUCH_SAVGOL_WINDOW // 2
+        smoothed = np.convolve(raw_data, TOUCH_SAVGOL_COEFFICIENTS, mode="valid")
+        smoothed_times = times[half_window:-half_window]
+        smoothed_zs = zs[half_window:-half_window]
+        slopes = np.gradient(smoothed, smoothed_times)
+        z_speed = np.gradient(smoothed_zs, smoothed_times)
+        descent_indices = np.flatnonzero(z_speed < -1.0)
+        if not len(descent_indices):
+            raise self.printer.command_error(
+                "Touch slope analysis requires Scanner samples from a descending move"
+            )
+        peak_index = int(descent_indices[np.argmax(np.abs(slopes[descent_indices]))])
+
+        reverse_times = times[-1] - times[::-1]
+        reverse_zs = zs[::-1]
+        reverse_data = raw_data[::-1]
+        reverse_smoothed = np.convolve(
+            reverse_data, TOUCH_SAVGOL_COEFFICIENTS, mode="valid"
+        )
+        reverse_smoothed_times = reverse_times[half_window:-half_window]
+        reverse_smoothed_zs = reverse_zs[half_window:-half_window]
+        reverse_slopes = np.gradient(reverse_smoothed, reverse_smoothed_times)
+        reverse_z_speed = np.gradient(reverse_smoothed_zs, reverse_smoothed_times)
+        reverse_descent_indices = np.flatnonzero(reverse_z_speed < -1.0)
+        if not len(reverse_descent_indices):
+            raise self.printer.command_error(
+                "Touch slope analysis requires Scanner samples from a reverse descending move"
+            )
+        reverse_peak_index = int(
+            reverse_descent_indices[
+                np.argmax(np.abs(reverse_slopes[reverse_descent_indices]))
+            ]
+        )
+        return float(
+            (smoothed_zs[peak_index] + reverse_smoothed_zs[reverse_peak_index])
+            / 2.0
+        )
 
     def _calc_median(self, positions):
         z_sorted = sorted(positions, key=(lambda p: p[2]))
@@ -775,6 +997,14 @@ class Scanner:
         if verbose:
             for message in args:
                 gcmd.respond_info(str(message))
+
+    def _resting_trigger_method(self):
+        return {
+            "scan": 0,
+            "touch": 1,
+            "adxl": 2,
+            "second_probe": 3,
+        }.get(self.calibration_method, 0)
 
     def check_temp(self, gcmd):
         hotend = self.toolhead.get_extruder()
@@ -811,7 +1041,14 @@ class Scanner:
                 cmd = "M109 S" + str(self.extruder_target)
                 self.gcode.run_script_from_command(cmd)
 
-    def run_touch_probe(self, gcmd, sample_count=None, next_xy=None, next_speed=None):
+    def run_touch_probe(
+        self,
+        gcmd,
+        sample_count=None,
+        next_xy=None,
+        next_speed=None,
+        debug=False,
+    ):
         speed = gcmd.get_float(
             "PROBE_SPEED", self.scanner_touch_config["speed"], above=0.0
         )
@@ -847,52 +1084,111 @@ class Scanner:
         probexy = self.printer.lookup_object("toolhead").get_position()[:2]
         retries = 0
         positions = []
+        calculated_positions = []
         curtime = self.printer.get_reactor().monotonic()
         max_accel = self.toolhead.get_status(curtime)["max_accel"]
+        uses_hardware_trigger = self.trigger_method in (2, 3)
         try:
             self.set_accel(self.scanner_touch_config["accel"])
             while len(positions) < sample_count:
-                # Probe position
-                pos = self.touch_probe(speed)
-                positions.append(pos)
-                # Check samples tolerance
-                z_positions = [p[2] for p in positions]
-                if max(z_positions) - min(z_positions) > samples_tolerance:
-                    if retries >= samples_retries:
-                        self._zhop()
-                        self.trigger_method = 0
-                        raise gcmd.error("Probe samples exceed samples_tolerance")
-                    gcmd.respond_info("Probe samples exceed tolerance. Retrying...")
-                    retries += 1
-                    positions = []
-                # Retract to the current point between samples. The final
-                # retract can move toward the next Touch Mesh coordinate.
-                if len(positions) < sample_count:
-                    self._move(probexy + [pos[2] + sample_retract_dist], lift_speed)
-                elif len(positions) == sample_count:
-                    if next_xy is not None and next_speed is not None:
-                        for target, move_speed in arc_retract_segments(
-                            probexy,
-                            pos[2],
-                            next_xy,
-                            sample_retract_dist,
-                            lift_speed,
-                            next_speed,
-                        ):
-                            self._move(target, move_speed)
-                    else:
-                        self._move(
-                            probexy + [pos[2] + sample_retract_dist], lift_speed
+                samples = []
+                debug_file = None
+                debug_path = None
+                if debug and not uses_hardware_trigger:
+                    debug_file, debug_path = self._open_touch_debug_stream()
+                try:
+                    curtime = self.printer.get_reactor().monotonic()
+                    if "z" not in self.toolhead.get_status(curtime)["homed_axes"]:
+                        raise self.printer.command_error("Must home before probe")
+                    target = self.toolhead.get_position()
+                    target[2] = self.toolhead.get_kinematics().get_status(curtime)[
+                        "axis_minimum"
+                    ][2]
+                    probe_context = contextlib.nullcontext()
+                    if not uses_hardware_trigger:
+                        probe_context = self.streaming_session(
+                            self._capture_touch_sample(samples, debug_file), latency=1
                         )
-                if len(positions) < sample_count or next_xy is None:
-                    self.toolhead.dwell(1.0)
+                    with probe_context:
+                        pos = self.phoming.probing_move(self.mcu_probe, target, speed)
+                        pos[2] += self.offset["z"]
+                        positions.append(pos)
+                        z_positions = [p[2] for p in positions]
+                        if max(z_positions) - min(z_positions) > samples_tolerance:
+                            if retries >= samples_retries:
+                                self._zhop()
+                                self.trigger_method = 0
+                                raise gcmd.error(
+                                    "Probe samples exceed samples_tolerance"
+                                )
+                            gcmd.respond_info(
+                                "Probe samples exceed tolerance. Retrying..."
+                            )
+                            retries += 1
+                            positions = []
+                            calculated_positions = []
+                        # Keep the stream active through the completed retract.
+                        if len(positions) < sample_count:
+                            self._move(
+                                probexy + [pos[2] + sample_retract_dist], lift_speed
+                            )
+                        elif next_xy is not None and next_speed is not None:
+                            for retract_target, move_speed in arc_retract_segments(
+                                probexy,
+                                pos[2],
+                                next_xy,
+                                sample_retract_dist,
+                                lift_speed,
+                                next_speed,
+                            ):
+                                self._move(retract_target, move_speed)
+                        else:
+                            self._move(
+                                probexy + [pos[2] + sample_retract_dist], lift_speed
+                            )
+                        if len(positions) < sample_count or next_xy is None:
+                            self.toolhead.dwell(1.0)
+                        self.toolhead.wait_moves()
+                finally:
+                    if debug_file is not None:
+                        debug_file.close()
+                self.last_touch_trigger_height = pos[2]
+                if uses_hardware_trigger:
+                    self.last_touch_actual_height = pos[2]
+                else:
+                    self.last_touch_actual_height = (
+                        self._touch_slope_peak_z(samples) + self.offset["z"]
+                    )
+                if positions:
+                    calculated_positions.append(
+                        [pos[0], pos[1], self.last_touch_actual_height]
+                    )
+                gcmd.respond_info(
+                    "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f)"
+                    % (
+                        pos[0],
+                        pos[1],
+                        pos[2],
+                        self.last_touch_actual_height,
+                    )
+                )
+                if debug_path is not None:
+                    gcmd.respond_info("Touch stream saved to %s" % debug_path)
         finally:
+            self.trigger_method = self._resting_trigger_method()
             self.set_accel(max_accel)
-            self.trigger_method = 0
         # Calculate and return result
+        self.last_touch_trigger_median_height = self._calc_median(positions)[2]
+        self.last_touch_actual_median_height = self._calc_median(calculated_positions)[2]
         if samples_result == "median":
-            return self._calc_median(positions)
-        return self._calc_mean(positions)
+            result = self._calc_median(calculated_positions)
+            self.last_touch_trigger_height = self.last_touch_trigger_median_height
+            self.last_touch_actual_height = self.last_touch_actual_median_height
+        else:
+            result = self._calc_mean(calculated_positions)
+            self.last_touch_trigger_height = self._calc_mean(positions)[2]
+            self.last_touch_actual_height = result[2]
+        return result
 
     def probe_calibrate_finalize(self, kin_pos):
         if kin_pos is None:
@@ -933,14 +1229,23 @@ class Scanner:
             self.check_temp(gcmd)
             self._move([touch_location_x, touch_location_y, None], 40)
             self.toolhead.wait_moves()
-            curpos = self.run_touch_probe(gcmd)
+            debug = gcmd.get_int("DEBUG", 0, minval=0, maxval=1) == 1
+            curpos = self.run_touch_probe(gcmd, debug=debug)
+            gcmd.respond_info(
+                "probe at %.3f,%.3f, median z=%.6f"
+                % (
+                    curpos[0],
+                    curpos[1],
+                    self.last_touch_actual_median_height,
+                )
+            )
             gcode_move = self.printer.lookup_object("gcode_move")
             offset = gcode_move.get_status()["homing_origin"].z
             self.probe_calibrate_z = offset - curpos[2]
             self.probe_calibrate_finalize([0, 0, 0])
             self.set_temp(gcmd)
             self.extruder_target = 0
-            self.trigger_method = 0
+            self.trigger_method = self._resting_trigger_method()
             self._zhop()
             return
         self.trigger_method = 0
@@ -996,6 +1301,9 @@ class Scanner:
 
     def _handle_connect(self):
         self.phoming = self.printer.lookup_object("homing")
+        if self.calibration_method == "adxl":
+            self.adxl345 = self.printer.lookup_object("adxl345")
+            self.init_adxl()
         self.mod_axis_twist_comp = self.printer.lookup_object(
             "axis_twist_compensation", None
         )
@@ -1882,7 +2190,7 @@ class Scanner:
     def cmd_PROBE_SWITCH(self, gcmd):
         method = gcmd.get("METHOD", "NONE").lower()
         if method == "scan":
-            self.calibration_method = "scan"
+            self.calibration_method = self.default_calibration_method
             self.trigger_method = 0
             gcmd.respond_info("Method switched to SCAN")
         elif method == "touch":
@@ -1964,6 +2272,7 @@ class Scanner:
                     lift_speed,
                     debug,
                     best_threshold_range,
+                    use_stream=False,
                 )
                 if (
                     result.range_value <= range_value
@@ -1989,6 +2298,7 @@ class Scanner:
                         lift_speed,
                         debug,
                         best_threshold_range,
+                        use_stream=False,
                     )
                     gcmd.respond_info(
                         "Threshold verification: threshold value %d, threshold quality: %r,  maximum %.6f, minimum %.6f, range %.6f, "
@@ -2052,8 +2362,6 @@ class Scanner:
                     best_threshold = current_threshold
                     best_threshold_range = result.range_value
                     if best_threshold_range <= target:
-                        if best_threshold != original_threshold:
-                            self._save_threshold(best_threshold)
                         break
 
                 current_threshold += step
@@ -2067,6 +2375,7 @@ class Scanner:
                 )
             )
             if best_threshold_range <= target:
+                self._save_threshold(best_threshold)
                 gcmd.respond_info(
                     "Saved threshold value %d as it is better than target %.3f \nRun SAVE_CONFIG to save this to your printer.cfg and restart"
                     % (best_threshold, target)
@@ -2430,6 +2739,7 @@ class Scanner:
         lift_speed,
         verbose=True,
         abort_range=float("inf"),
+        use_stream=True,
     ):
         pos = self.toolhead.get_position()
 
@@ -2463,11 +2773,11 @@ class Scanner:
                     self.set_accel(self.scanner_touch_config["accel"])
                     if len(positions) < skip_samples:
                         pos = self.touch_probe(
-                            speed, skip=1, verbose=verbose
+                            speed, skip=1, verbose=verbose, use_stream=use_stream
                         )  # Pass skip=1 if sample is skipped
                     else:
                         pos = self.touch_probe(
-                            speed, skip=0, verbose=verbose
+                            speed, skip=0, verbose=verbose, use_stream=use_stream
                         )  # Normal probe
                 except Exception as e:
                     toolhead = self.printer.lookup_object("toolhead")
@@ -3139,8 +3449,19 @@ class ScannerEndstopWrapper:
             )
         homing_state.set_homed_position([None, None, dist])
 
+    def _require_hardware_probe(self):
+        if (
+            self.scanner.trigger_method in (2, 3)
+            and self.scanner.endstop_mcu_endstop is None
+        ):
+            method = "adxl" if self.scanner.trigger_method == 2 else "second_probe"
+            raise self.scanner.printer.command_error(
+                "%s requires probe_pin in [scanner]" % (method,)
+            )
+
     def _handle_homing_move_begin(self, hmove):
         if self.scanner.mcu_probe in hmove.get_mcu_endstops():
+            self._require_hardware_probe()
             etrsync = self._trsyncs[0]
             if self.scanner.trigger_method == 1:
                 self.scanner.scanner_home_cmd.send(
@@ -3191,6 +3512,7 @@ class ScannerEndstopWrapper:
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
+        self._require_hardware_probe()
         if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
             self.is_homing = True
             return self.scanner.endstop_mcu_endstop.home_start(
@@ -3326,6 +3648,15 @@ class ScannerMeshHelper:
         self.scanner = scanner
         self.scipy = None
         self.mesh_config = mesh_config
+        printer_config = config.getsection("printer")
+        self.delta_print_radius = None
+        if printer_config.get("kinematics", "").strip().lower() == "delta":
+            self.delta_print_radius = printer_config.getfloat(
+                "print_radius",
+                printer_config.getfloat("delta_radius"),
+                above=0,
+                note_valid=False,
+            )
         self.bm = self.scanner.printer.load_object(mesh_config, "bed_mesh")
         try:
             self.compensation_profile = CompensationProfile.load(config)
@@ -3451,6 +3782,10 @@ class ScannerMeshHelper:
         if method == "scanner":
             self.calibrate(gcmd)
         elif method == "touch_compensation":
+            if gcmd.get_int("ADAPTIVE", 0):
+                gcmd.respond_info(
+                    "METHOD=touch_compensation ignores ADAPTIVE=1 and uses fixed mesh bounds"
+                )
             self.calibrate_touch_compensation(gcmd)
         else:
             self.prev_gcmd(gcmd)
@@ -3573,7 +3908,7 @@ class ScannerMeshHelper:
 
         return points
 
-    def calibrate(self, gcmd, apply_mesh=True):
+    def calibrate(self, gcmd, apply_mesh=True, adaptive=True):
         self.active_is_round = self.is_round
         if self.is_round:
             self.radius = gcmd.get_float("MESH_RADIUS", self.def_radius, above=0)
@@ -3646,16 +3981,27 @@ class ScannerMeshHelper:
         else:
             self.zero_ref_mode = None
 
-        # Adaptive calibration uses the rectangular object bounds for every bed shape.
-        if gcmd.get_int("ADAPTIVE", 0):
+        # Circular meshes use an inscribed square scan region around the print.
+        if adaptive and gcmd.get_int("ADAPTIVE", 0):
             if self.exclude_object is not None:
                 margin = gcmd.get_float("ADAPTIVE_MARGIN", self.adaptive_margin)
-                if self._shrink_to_excluded_objects(gcmd, margin):
-                    self.active_is_round = False
+                if self.is_round:
+                    shrink_result = self._shrink_round_to_excluded_objects(gcmd, margin)
+                    if shrink_result:
+                        self.active_is_round = False
+                        self._limit_round_adaptive_overscan(gcmd)
+                    elif shrink_result is None:
+                        gcmd.respond_info(
+                            "Requested adaptive mesh, but no print objects are defined. Ignoring."
+                        )
                 else:
-                    gcmd.respond_info(
-                        "Requested adaptive mesh, but no print objects are defined. Ignoring."
-                    )
+                    shrink_result = self._shrink_to_excluded_objects(gcmd, margin)
+                    if shrink_result:
+                        self.active_is_round = False
+                    elif shrink_result is None:
+                        gcmd.respond_info(
+                            "Requested adaptive mesh, but no print objects are defined. Ignoring."
+                        )
             else:
                 gcmd.respond_info(
                     "Requested adaptive mesh, but [exclude_object] is not enabled. Ignoring."
@@ -3666,6 +4012,7 @@ class ScannerMeshHelper:
 
         self.toolhead = self.scanner.toolhead
         path = self._generate_path()
+        self._validate_delta_path(gcmd, path)
 
         probe_speed = gcmd.get_float("PROBE_SPEED", self.scanner.speed, above=0.0)
         self.scanner._move_to_probing_height(probe_speed)
@@ -3710,7 +4057,7 @@ class ScannerMeshHelper:
 
         # Capture raw Scanner values so an existing profile cannot affect
         # the newly calculated Touch Mesh compensation.
-        scanner_matrix = self.calibrate(gcmd, apply_mesh=False)
+        scanner_matrix = self.calibrate(gcmd, apply_mesh=False, adaptive=False)
         gcmd.respond_info("Touch mesh compensation uses raw Scanner measurements")
         original_trigger_method = self.scanner.trigger_method
         max_accel = toolhead.get_status(self.scanner.reactor.monotonic())["max_accel"]
@@ -3719,6 +4066,8 @@ class ScannerMeshHelper:
         scanner_at_touch = [[None] * self.touch_res_x for _ in range(self.touch_res_y)]
         touch_step_x = (self.max_x - self.min_x) / (self.touch_res_x - 1)
         touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
+        xo = self.scanner.offset["x"]
+        yo = self.scanner.offset["y"]
         touch_indices = (
             mesh_probe_indices(self.touch_res_x, self.touch_res_y, circular=True)
             if self.is_round
@@ -3743,7 +4092,7 @@ class ScannerMeshHelper:
             for point_index, (xi, yi, x, y) in enumerate(touch_points):
                 if point_index == 0:
                     self.scanner._zhop()
-                    toolhead.manual_move([x, y, None], speed)
+                    toolhead.manual_move([x - xo, y - yo, None], speed)
                 toolhead.wait_moves()
                 scanner_value = interpolate_matrix(
                     scanner_matrix,
@@ -3761,7 +4110,8 @@ class ScannerMeshHelper:
                 # run_touch_probe restores scan mode after every point.
                 self.scanner.trigger_method = 1
                 next_xy = (
-                    list(touch_points[point_index + 1][2:4])
+                    [touch_points[point_index + 1][2] - xo,
+                     touch_points[point_index + 1][3] - yo]
                     if point_index + 1 < len(touch_points)
                     else None
                 )
@@ -3771,20 +4121,8 @@ class ScannerMeshHelper:
                 scanner_at_touch[yi][xi] = scanner_value
 
             if self.is_round:
-                touch_matrix = fill_round_mesh_edges(
-                    touch_matrix,
-                    [
-                        round_mesh_row_indices(self.touch_res_x, yi)
-                        for yi in range(self.touch_res_y)
-                    ],
-                )
-                scanner_at_touch = fill_round_mesh_edges(
-                    scanner_at_touch,
-                    [
-                        round_mesh_row_indices(self.touch_res_x, yi)
-                        for yi in range(self.touch_res_y)
-                    ],
-                )
+                touch_matrix = self._fill_round_mesh_edges(touch_matrix)
+                scanner_at_touch = self._fill_round_mesh_edges(scanner_at_touch)
 
             aligned_touch, aligned_scanner = align_matrices_at_center(
                 touch_matrix,
@@ -3819,11 +4157,12 @@ class ScannerMeshHelper:
             for retry_index, (xi, yi, x, y) in enumerate(retry_points):
                 if retry_index == 0:
                     self.scanner._zhop()
-                    toolhead.manual_move([x, y, None], speed)
+                    toolhead.manual_move([x - xo, y - yo, None], speed)
                 toolhead.wait_moves()
                 self.scanner.trigger_method = 1
                 next_xy = (
-                    list(retry_points[retry_index + 1][2:4])
+                    [retry_points[retry_index + 1][2] - xo,
+                     retry_points[retry_index + 1][3] - yo]
                     if retry_index + 1 < len(retry_points)
                     else None
                 )
@@ -3845,14 +4184,35 @@ class ScannerMeshHelper:
             self.min_y,
             self.max_y,
         )
-        compensation = difference_matrix(aligned_touch, aligned_scanner)
+        touch_diff = difference_matrix(aligned_touch, aligned_scanner)
+        compensation = []
+        scanner_step_x = (self.max_x - self.min_x) / (self.res_x - 1)
+        scanner_step_y = (self.max_y - self.min_y) / (self.res_y - 1)
+        for yi in range(self.res_y):
+            y = self.min_y + yi * scanner_step_y
+            row = []
+            for xi in range(self.res_x):
+                x = self.min_x + xi * scanner_step_x
+                correction = interpolate_matrix(
+                    touch_diff,
+                    self.min_x,
+                    self.max_x,
+                    self.min_y,
+                    self.max_y,
+                    self.touch_res_x,
+                    self.touch_res_y,
+                    x,
+                    y,
+                )
+                row.append(correction if correction is not None else 0.0)
+            compensation.append(row)
         profile = CompensationProfile(
             self.min_x,
             self.max_x,
             self.min_y,
             self.max_y,
-            self.touch_res_x,
-            self.touch_res_y,
+            self.res_x,
+            self.res_y,
             compensation,
         )
         profile.save(self.scanner.printer.lookup_object("configfile"))
@@ -3890,12 +4250,84 @@ class ScannerMeshHelper:
             gcmd.respond_info("Applied saved Touch mesh compensation")
         return matrix
 
+    def _shrink_round_to_excluded_objects(self, gcmd, margin):
+        objects = self.exclude_object.get_status().get("objects", {})
+        if len(objects) == 0:
+            return None
+
+        points = [point for obj in objects for point in obj["polygon"]]
+        min_x = min(point[0] for point in points)
+        max_x = max(point[0] for point in points)
+        min_y = min(point[1] for point in points)
+        max_y = max(point[1] for point in points)
+        min_x -= margin
+        max_x += margin
+        min_y -= margin
+        max_y += margin
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        desired_side = max(max_x - min_x, max_y - min_y)
+        direction_x = 1 if center_x > self.origin_x else -1 if center_x < self.origin_x else 0
+        direction_y = 1 if center_y > self.origin_y else -1 if center_y < self.origin_y else 0
+
+        def square_bounds(side):
+            if direction_x > 0:
+                square_min_x, square_max_x = min_x, min_x + side
+            elif direction_x < 0:
+                square_min_x, square_max_x = max_x - side, max_x
+            else:
+                square_min_x, square_max_x = center_x - side / 2.0, center_x + side / 2.0
+            if direction_y > 0:
+                square_min_y, square_max_y = min_y, min_y + side
+            elif direction_y < 0:
+                square_min_y, square_max_y = max_y - side, max_y
+            else:
+                square_min_y, square_max_y = center_y - side / 2.0, center_y + side / 2.0
+            return square_min_x, square_max_x, square_min_y, square_max_y
+
+        def square_fits(side):
+            square_min_x, square_max_x, square_min_y, square_max_y = square_bounds(side)
+            return all(
+                self._is_round_position(x, y)
+                for x, y in (
+                    (square_min_x, square_min_y),
+                    (square_min_x, square_max_y),
+                    (square_max_x, square_min_y),
+                    (square_max_x, square_max_y),
+                )
+            )
+
+        if not square_fits(0.0):
+            raise gcmd.error("Adaptive object bounds do not overlap the circular mesh")
+
+        lower, upper = 0.0, self.radius
+        for _ in range(32):
+            side = (lower + upper) / 2.0
+            if square_fits(side):
+                lower = side
+            else:
+                upper = side
+        side = min(desired_side, lower)
+        square_min_x, square_max_x, square_min_y, square_max_y = square_bounds(side)
+
+        original_step = (self.max_x - self.min_x) / (self.res_x - 1)
+        count = max(3, int(math.ceil(side / original_step)) + 1)
+        self.min_x, self.max_x = square_min_x, square_max_x
+        self.min_y, self.max_y = square_min_y, square_max_y
+        self.res_x = self.res_y = count
+        self.profile_name = None
+        gcmd.respond_info(
+            "Adaptive square mesh X:%.3f,%.3f Y:%.3f,%.3f"
+            % (self.min_x, self.max_x, self.min_y, self.max_y)
+        )
+        return True
+
     def _shrink_to_excluded_objects(self, gcmd, margin):
         bound_min_x, bound_max_x = None, None
         bound_min_y, bound_max_y = None, None
         objects = self.exclude_object.get_status().get("objects", {})
         if len(objects) == 0:
-            return False
+            return None
 
         for obj in objects:
             for point in obj["polygon"]:
@@ -3907,25 +4339,6 @@ class ScannerMeshHelper:
         bound_max_x += margin
         bound_min_y -= margin
         bound_max_y += margin
-
-        if self.is_round:
-            original_bounds = (bound_min_x, bound_max_x, bound_min_y, bound_max_y)
-            radius = self.radius
-            origin_x, origin_y = self.origin_x, self.origin_y
-            bound_min_y = max(bound_min_y, origin_y - radius)
-            bound_max_y = min(bound_max_y, origin_y + radius)
-            y_extent = max(abs(bound_min_y - origin_y), abs(bound_max_y - origin_y))
-            x_extent = math.sqrt(max(0.0, radius * radius - y_extent * y_extent))
-            bound_min_x = max(bound_min_x, origin_x - x_extent)
-            bound_max_x = min(bound_max_x, origin_x + x_extent)
-            x_extent = max(abs(bound_min_x - origin_x), abs(bound_max_x - origin_x))
-            y_extent = math.sqrt(max(0.0, radius * radius - x_extent * x_extent))
-            bound_min_y = max(bound_min_y, origin_y - y_extent)
-            bound_max_y = min(bound_max_y, origin_y + y_extent)
-            if bound_min_x >= bound_max_x or bound_min_y >= bound_max_y:
-                raise gcmd.error("Adaptive bounds have no area within the circular mesh radius")
-            if original_bounds != (bound_min_x, bound_max_x, bound_min_y, bound_max_y):
-                gcmd.respond_info("Adaptive bounds clipped to the circular mesh radius")
 
         # Calculate original step size and apply the new bounds
         orig_span_x = self.max_x - self.min_x
@@ -3954,6 +4367,48 @@ class ScannerMeshHelper:
 
         self.profile_name = None
         return True
+
+    def _limit_round_adaptive_overscan(self, gcmd):
+        requested_overscan = self.overscan
+        if requested_overscan <= 0:
+            return
+
+        offset_x = self.scanner.offset["x"]
+        offset_y = self.scanner.offset["y"]
+
+        def path_fits_round_bed():
+            return all(
+                self._is_round_position(x + offset_x, y + offset_y)
+                for x, y in self._generate_path()
+            )
+
+        if path_fits_round_bed():
+            return
+
+        lower, upper = 0.0, requested_overscan
+        for _ in range(32):
+            self.overscan = (lower + upper) / 2.0
+            if path_fits_round_bed():
+                lower = self.overscan
+            else:
+                upper = self.overscan
+        self.overscan = lower
+        gcmd.respond_info(
+            "Adaptive overscan limited to %.3f mm by the circular mesh radius"
+            % self.overscan
+        )
+
+    def _validate_delta_path(self, gcmd, path):
+        if self.delta_print_radius is None:
+            return
+
+        for x, y in path:
+            if math.hypot(x, y) > self.delta_print_radius + 1.0e-9:
+                raise gcmd.error(
+                    "Scanner mesh path exceeds Delta print_radius %.3f at %.3f,%.3f; "
+                    "adjust mesh bounds, Scanner XY offsets, or overscan"
+                    % (self.delta_print_radius, x, y)
+                )
 
     def _fly_path(self, path, speed, runs):
         # Run through the path
@@ -3984,12 +4439,37 @@ class ScannerMeshHelper:
     def _fill_round_mesh_edges(self, matrix):
         if not self.active_is_round:
             return matrix
-        return np.asarray(
-            fill_round_mesh_edges(
-                matrix, [self._round_row_indices(yi) for yi in range(self.res_y)]
-            ),
-            dtype=float,
-        )
+        x_count = len(matrix[0]) if len(matrix) else 0
+        y_count = len(matrix)
+        if x_count < 3 or x_count != y_count or any(len(row) != x_count for row in matrix):
+            raise ValueError("round mesh matrix must be a non-empty square grid")
+        valid_rows = [self._round_row_indices(yi, x_count) for yi in range(y_count)]
+        step_x = (self.max_x - self.min_x) / (x_count - 1)
+        step_y = (self.max_y - self.min_y) / (y_count - 1)
+        missing = []
+        for yi, valid_indices in enumerate(valid_rows):
+            edge_indices = (
+                (valid_indices[0],)
+                if valid_indices[0] == valid_indices[-1]
+                else (valid_indices[0], valid_indices[-1])
+            )
+            for xi in edge_indices:
+                value = matrix[yi][xi]
+                if value is None or not math.isfinite(value):
+                    missing.append(
+                        "%.3f,%.3f"
+                        % (
+                            self.min_x + xi * step_x,
+                            self.min_y + yi * step_y,
+                        )
+                    )
+        if missing:
+            raise ValueError(
+                "round mesh is missing edge measurements at X,Y: %s; "
+                "increase CLUSTER_SIZE or inspect Scanner data at these coordinates"
+                % (", ".join(missing),)
+            )
+        return np.asarray(fill_round_mesh_edges(matrix, valid_rows), dtype=float)
 
     def _is_valid_position(self, x, y):
         within_bounds = self.min_x <= x <= self.max_x and self.min_y <= y <= self.max_y
