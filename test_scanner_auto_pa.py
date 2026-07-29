@@ -1,6 +1,6 @@
 import math
 import unittest
-from unittest.mock import mock_open, patch
+from unittest.mock import Mock, mock_open, patch
 
 from scanner_auto_pa import (
     ScannerAutoPA,
@@ -41,6 +41,17 @@ class ScannerAutoPATest(unittest.TestCase):
 
         self.assertFalse(result["valid"])
         self.assertEqual(result["reason"], "insufficient Scanner samples")
+
+    def test_settings_include_configured_baseline_time(self):
+        gcmd = Mock()
+        gcmd.get_float.side_effect = lambda name, default, **kwargs: default
+        gcmd.get_int.side_effect = lambda name, default, **kwargs: default
+        gcmd.get.side_effect = lambda name, default: default
+        self.auto_pa.baseline_time = 1.25
+
+        settings = self.auto_pa._settings(gcmd)
+
+        self.assertEqual(settings["baseline_time"], 1.25)
 
     def test_debug_export_writes_baseline_and_test_rows(self):
         mocked_open = mock_open()

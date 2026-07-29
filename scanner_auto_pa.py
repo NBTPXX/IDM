@@ -150,6 +150,7 @@ class ScannerAutoPA:
             "high_flow": high_flow,
             "low_time": low_time,
             "high_time": high_time,
+            "baseline_time": self.baseline_time,
             "accel": gcmd.get_float("ACCEL", 5000.0, above=0.0),
             "apply": gcmd.get_int("APPLY", 0, minval=0) == 1,
             "export": os.path.basename(export),
