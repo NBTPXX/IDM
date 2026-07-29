@@ -840,16 +840,27 @@ class Scanner:
         if verbose:
             if skip == 1:
                 skipped_msg = " - SKIPPED - result not added"
-            self.gcode.respond_info(
-                "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f)%s"
-                % (
-                    epos[0],
-                    epos[1],
-                    self.last_touch_trigger_height,
-                    self.last_touch_actual_height,
-                    skipped_msg,
+            if self.trigger_method == 1:
+                self.gcode.respond_info(
+                    "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f)%s"
+                    % (
+                        epos[0],
+                        epos[1],
+                        self.last_touch_trigger_height,
+                        self.last_touch_actual_height,
+                        skipped_msg,
+                    )
                 )
-            )
+            else:
+                self.gcode.respond_info(
+                    "probe at %.3f,%.3f is z=%.6f%s"
+                    % (
+                        epos[0],
+                        epos[1],
+                        self.last_touch_trigger_height,
+                        skipped_msg,
+                    )
+                )
         return epos[:3]
 
     def _capture_touch_sample(self, samples, debug_file=None):
