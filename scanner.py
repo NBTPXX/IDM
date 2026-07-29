@@ -13,6 +13,7 @@
 import threading
 import multiprocessing
 import importlib
+import contextlib
 import traceback
 import logging
 import chelper
@@ -792,7 +793,9 @@ class Scanner:
         pos = toolhead.get_position()
         pos[2] = status["axis_minimum"][2]
         try:
-            if use_stream:
+            if self.trigger_method in (2, 3):
+                epos = self._external_probe_move(pos, speed)
+            elif use_stream:
                 epos = self._touch_move_with_slope_peak(pos, speed)
             else:
                 epos = self._touch_move(pos, speed)
@@ -870,6 +873,23 @@ class Scanner:
         epos = self.phoming.probing_move(self.mcu_probe, target, speed)
         self.last_touch_trigger_height = float(epos[2])
         self.last_touch_actual_height = float(epos[2])
+        return epos
+
+    def _external_probe_move(self, target, speed):
+        epos = self._touch_move(target, speed)
+        curtime = self.printer.get_reactor().monotonic()
+        z_max = self.toolhead.get_kinematics().get_status(curtime)[
+            "axis_maximum"
+        ][2]
+        retract_position = self.toolhead.get_position()[:]
+        retract_position[2] = min(
+            retract_position[2] + self.scanner_touch_config["retract_dist"], z_max
+        )
+        self.toolhead.manual_move(
+            retract_position, self.scanner_touch_config["retract_speed"]
+        )
+        self.toolhead.dwell(1.0)
+        self.toolhead.wait_moves()
         return epos
 
     def _touch_move_with_slope_peak(
@@ -1059,13 +1079,14 @@ class Scanner:
         calculated_positions = []
         curtime = self.printer.get_reactor().monotonic()
         max_accel = self.toolhead.get_status(curtime)["max_accel"]
+        uses_hardware_trigger = self.trigger_method in (2, 3)
         try:
             self.set_accel(self.scanner_touch_config["accel"])
             while len(positions) < sample_count:
                 samples = []
                 debug_file = None
                 debug_path = None
-                if debug:
+                if debug and not uses_hardware_trigger:
                     debug_file, debug_path = self._open_touch_debug_stream()
                 try:
                     curtime = self.printer.get_reactor().monotonic()
@@ -1075,9 +1096,12 @@ class Scanner:
                     target[2] = self.toolhead.get_kinematics().get_status(curtime)[
                         "axis_minimum"
                     ][2]
-                    with self.streaming_session(
-                        self._capture_touch_sample(samples, debug_file), latency=1
-                    ):
+                    probe_context = contextlib.nullcontext()
+                    if not uses_hardware_trigger:
+                        probe_context = self.streaming_session(
+                            self._capture_touch_sample(samples, debug_file), latency=1
+                        )
+                    with probe_context:
                         pos = self.phoming.probing_move(self.mcu_probe, target, speed)
                         pos[2] += self.offset["z"]
                         positions.append(pos)
@@ -1121,9 +1145,12 @@ class Scanner:
                     if debug_file is not None:
                         debug_file.close()
                 self.last_touch_trigger_height = pos[2]
-                self.last_touch_actual_height = (
-                    self._touch_slope_peak_z(samples) + self.offset["z"]
-                )
+                if uses_hardware_trigger:
+                    self.last_touch_actual_height = pos[2]
+                else:
+                    self.last_touch_actual_height = (
+                        self._touch_slope_peak_z(samples) + self.offset["z"]
+                    )
                 if positions:
                     calculated_positions.append(
                         [pos[0], pos[1], self.last_touch_actual_height]
@@ -3411,8 +3438,19 @@ class ScannerEndstopWrapper:
             )
         homing_state.set_homed_position([None, None, dist])
 
+    def _require_hardware_probe(self):
+        if (
+            self.scanner.trigger_method in (2, 3)
+            and self.scanner.endstop_mcu_endstop is None
+        ):
+            method = "adxl" if self.scanner.trigger_method == 2 else "second_probe"
+            raise self.scanner.printer.command_error(
+                "%s requires probe_pin in [scanner]" % (method,)
+            )
+
     def _handle_homing_move_begin(self, hmove):
         if self.scanner.mcu_probe in hmove.get_mcu_endstops():
+            self._require_hardware_probe()
             etrsync = self._trsyncs[0]
             if self.scanner.trigger_method == 1:
                 self.scanner.scanner_home_cmd.send(
@@ -3463,6 +3501,7 @@ class ScannerEndstopWrapper:
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
+        self._require_hardware_probe()
         if self.scanner.trigger_method == 2 or self.scanner.trigger_method == 3:
             self.is_homing = True
             return self.scanner.endstop_mcu_endstop.home_start(
