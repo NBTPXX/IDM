@@ -672,7 +672,6 @@ class Scanner:
         manual_z_offset = touch_settings.manual_z_offset
 
         original_threshold = self.detect_threshold_z
-        touch_trigger_method = self.trigger_method
         try:
             self.detect_threshold_z = test_threshold
             # Set the initial position for the toolhead
@@ -696,7 +695,6 @@ class Scanner:
             samples = []
 
             while len(samples) < num_samples:
-                self.trigger_method = touch_trigger_method
                 self.toolhead.wait_moves()
                 self.set_accel(accel)
                 self.log_debug_info(verbose, gcmd, f"Set Acceleration to: {int(accel)}")
@@ -705,22 +703,13 @@ class Scanner:
                 )
 
                 try:
-                    if self.trigger_method in (2, 3):
-                        probe_position = self._external_probe_move(
-                            homing_position,
-                            speed,
-                            retract_dist,
-                            retract_speed,
-                            z_max,
-                        )
-                    else:
-                        probe_position = self._touch_move_with_slope_peak(
-                            homing_position,
-                            speed,
-                            retract_dist,
-                            retract_speed,
-                            z_max,
-                        )
+                    probe_position = self._touch_move_with_slope_peak(
+                        homing_position,
+                        speed,
+                        retract_dist,
+                        retract_speed,
+                        z_max,
+                    )
                 except self.printer.command_error as e:
                     if self.printer.is_shutdown():
                         self.trigger_method = 0
@@ -898,22 +887,19 @@ class Scanner:
         self.last_touch_actual_height = float(epos[2])
         return epos
 
-    def _external_probe_move(
-        self, target, speed, retract_dist=None, retract_speed=None, z_max=None
-    ):
-        if retract_dist is None:
-            retract_dist = self.scanner_touch_config["retract_dist"]
-        if retract_speed is None:
-            retract_speed = self.scanner_touch_config["retract_speed"]
-        if z_max is None:
-            curtime = self.printer.get_reactor().monotonic()
-            z_max = self.toolhead.get_kinematics().get_status(curtime)[
-                "axis_maximum"
-            ][2]
+    def _external_probe_move(self, target, speed):
         epos = self._touch_move(target, speed)
+        curtime = self.printer.get_reactor().monotonic()
+        z_max = self.toolhead.get_kinematics().get_status(curtime)[
+            "axis_maximum"
+        ][2]
         retract_position = self.toolhead.get_position()[:]
-        retract_position[2] = min(retract_position[2] + retract_dist, z_max)
-        self.toolhead.manual_move(retract_position, retract_speed)
+        retract_position[2] = min(
+            retract_position[2] + self.scanner_touch_config["retract_dist"], z_max
+        )
+        self.toolhead.manual_move(
+            retract_position, self.scanner_touch_config["retract_speed"]
+        )
         self.toolhead.dwell(1.0)
         self.toolhead.wait_moves()
         return epos
