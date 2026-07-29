@@ -804,7 +804,14 @@ class Scanner:
                     kinematics.clear_homing_state([2])
             raise
 
-    def touch_probe(self, speed, skip=0, verbose=True, use_stream=True):
+    def touch_probe(
+        self,
+        speed,
+        skip=0,
+        verbose=True,
+        use_stream=True,
+        retract_after_trigger=True,
+    ):
         skipped_msg = ""
         toolhead = self.printer.lookup_object("toolhead")
         curtime = self.printer.get_reactor().monotonic()
@@ -814,7 +821,9 @@ class Scanner:
         pos = toolhead.get_position()
         pos[2] = status["axis_minimum"][2]
         try:
-            if self.trigger_method in (2, 3):
+            if not retract_after_trigger:
+                epos = self._touch_move(pos, speed)
+            elif self.trigger_method in (2, 3):
                 epos = self._external_probe_move(pos, speed)
             elif use_stream:
                 epos = self._touch_move_with_slope_peak(pos, speed)
@@ -1510,7 +1519,13 @@ class Scanner:
 
         self._start_streaming()
         try:
-            epos = self._probe(speed, skip_samples, allow_faulty=allow_faulty)
+            retract_after_trigger = gcmd.get("HOME_ATTEMPT_NUM", None) is None
+            epos = self._probe(
+                speed,
+                skip_samples,
+                allow_faulty=allow_faulty,
+                retract_after_trigger=retract_after_trigger,
+            )
             if hasattr(manual_probe, "ProbeResult"):
                 (x, y, z) = self.get_offsets()
                 epos = manual_probe.ProbeResult(
@@ -1549,10 +1564,20 @@ class Scanner:
                 reason += probe.HINT_TIMEOUT
             raise self.printer.command_error(reason)
 
-    def _probe(self, speed, skip=0, num_samples=10, allow_faulty=False, verbose=True):
+    def _probe(
+        self,
+        speed,
+        skip=0,
+        num_samples=10,
+        allow_faulty=False,
+        verbose=True,
+        retract_after_trigger=True,
+    ):
         skipped_msg = ""
         if self.trigger_method != 0:
-            return self.touch_probe(speed, skip)
+            return self.touch_probe(
+                speed, skip, retract_after_trigger=retract_after_trigger
+            )
         target = self.trigger_distance
         tdt = self.trigger_dive_threshold
         (dist, samples) = self._sample(5, num_samples)
