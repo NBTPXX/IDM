@@ -1175,7 +1175,7 @@ class Scanner:
                 if debug_path is not None:
                     gcmd.respond_info("Touch stream saved to %s" % debug_path)
         finally:
-            self.trigger_method = self._resting_trigger_method()
+            self.trigger_method = 0
             self.set_accel(max_accel)
         # Calculate and return result
         self.last_touch_trigger_median_height = self._calc_median(positions)[2]
@@ -1245,7 +1245,7 @@ class Scanner:
             self.probe_calibrate_finalize([0, 0, 0])
             self.set_temp(gcmd)
             self.extruder_target = 0
-            self.trigger_method = self._resting_trigger_method()
+            self.trigger_method = 0
             self._zhop()
             return
         self.trigger_method = 0
