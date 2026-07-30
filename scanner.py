@@ -1269,22 +1269,19 @@ class Scanner:
         return result
 
     def probe_calibrate_finalize(self, kin_pos):
-        try:
-            if kin_pos is None:
-                return
-            z_offset = kin_pos[2] - self.probe_calibrate_z
-            self.model.offset = self.model.offset + z_offset
-            pos = self.toolhead.get_position()
-            pos[2] = pos[2] - z_offset
-            self.toolhead.set_position(pos)
-            configfile = self.printer.lookup_object("configfile")
-            configfile.set(
-                "scanner model " + self.model.name,
-                "model_offset",
-                "%.3f" % (self.model.offset),
-            )
-        finally:
-            self.trigger_method = 0
+        if kin_pos is None:
+            return
+        z_offset = kin_pos[2] - self.probe_calibrate_z
+        self.model.offset = self.model.offset + z_offset
+        pos = self.toolhead.get_position()
+        pos[2] = pos[2] - z_offset
+        self.toolhead.set_position(pos)
+        configfile = self.printer.lookup_object("configfile")
+        configfile.set(
+            "scanner model " + self.model.name,
+            "model_offset",
+            "%.3f" % (self.model.offset),
+        )
 
     cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
 
@@ -1329,21 +1326,12 @@ class Scanner:
             self.trigger_method = 0
             self._zhop()
             return
-        if self.calibration_method == "touch":
-            self.trigger_method = 1
-        elif self.calibration_method == "adxl":
-            self.trigger_method = 2
-            self.adxl345 = self.printer.lookup_object("adxl345")
-            self.init_adxl()
-        elif self.calibration_method == "second_probe":
-            self.trigger_method = 3
-        else:
-            self.trigger_method = 0
+        self.trigger_method = 0
         manual_probe.verify_no_manual_probe(self.printer)
         lift_speed = self.get_lift_speed(gcmd)
         # Perform initial probe
         curpos = self.run_probe(gcmd)
-        self.probe_calibrate_z = curpos[2] - self.get_offsets(gcmd)[2]
+        self.probe_calibrate_z = curpos[2] - self.trigger_distance
         # Move the nozzle over the probe point
         curpos[0] += self.offset["x"]
         curpos[1] += self.offset["y"]
@@ -3573,18 +3561,7 @@ class ScannerEndstopWrapper:
     def _handle_homing_move_begin(self, hmove):
         if self.scanner.mcu_probe in hmove.get_mcu_endstops():
             self._require_hardware_probe()
-            etrsync = self._trsyncs[0]
-            if self.scanner.trigger_method == 1:
-                self.scanner.scanner_home_cmd.send(
-                    [
-                        etrsync.get_oid(),
-                        etrsync.REASON_ENDSTOP_HIT,
-                        0,
-                        self.scanner.detect_threshold_z,
-                        self.scanner.trigger_method,
-                    ]
-                )
-            elif self.scanner.trigger_method == 2:
+            if self.scanner.trigger_method == 2:
                 self.scanner.mcu_probe.probe_prepare(hmove)
 
     def _handle_homing_move_end(self, hmove):
@@ -3658,6 +3635,17 @@ class ScannerEndstopWrapper:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
 
+        if self.scanner.trigger_method == 1:
+            self.scanner.scanner_home_cmd.send(
+                [
+                    etrsync.get_oid(),
+                    etrsync.REASON_ENDSTOP_HIT,
+                    0,
+                    self.scanner.detect_threshold_z,
+                    self.scanner.trigger_method,
+                ]
+            )
+            return self._trigger_completion
         if self.scanner.trigger_method != 0:
             return self._trigger_completion
 
