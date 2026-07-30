@@ -1269,19 +1269,22 @@ class Scanner:
         return result
 
     def probe_calibrate_finalize(self, kin_pos):
-        if kin_pos is None:
-            return
-        z_offset = kin_pos[2] - self.probe_calibrate_z
-        self.model.offset = self.model.offset + z_offset
-        pos = self.toolhead.get_position()
-        pos[2] = pos[2] - z_offset
-        self.toolhead.set_position(pos)
-        configfile = self.printer.lookup_object("configfile")
-        configfile.set(
-            "scanner model " + self.model.name,
-            "model_offset",
-            "%.3f" % (self.model.offset),
-        )
+        try:
+            if kin_pos is None:
+                return
+            z_offset = kin_pos[2] - self.probe_calibrate_z
+            self.model.offset = self.model.offset + z_offset
+            pos = self.toolhead.get_position()
+            pos[2] = pos[2] - z_offset
+            self.toolhead.set_position(pos)
+            configfile = self.printer.lookup_object("configfile")
+            configfile.set(
+                "scanner model " + self.model.name,
+                "model_offset",
+                "%.3f" % (self.model.offset),
+            )
+        finally:
+            self.trigger_method = 0
 
     cmd_PROBE_CALIBRATE_help = "Calibrate the probe's z_offset"
 
@@ -1326,12 +1329,21 @@ class Scanner:
             self.trigger_method = 0
             self._zhop()
             return
-        self.trigger_method = 0
+        if self.calibration_method == "touch":
+            self.trigger_method = 1
+        elif self.calibration_method == "adxl":
+            self.trigger_method = 2
+            self.adxl345 = self.printer.lookup_object("adxl345")
+            self.init_adxl()
+        elif self.calibration_method == "second_probe":
+            self.trigger_method = 3
+        else:
+            self.trigger_method = 0
         manual_probe.verify_no_manual_probe(self.printer)
         lift_speed = self.get_lift_speed(gcmd)
         # Perform initial probe
         curpos = self.run_probe(gcmd)
-        self.probe_calibrate_z = curpos[2] - self.trigger_distance
+        self.probe_calibrate_z = curpos[2] - self.get_offsets(gcmd)[2]
         # Move the nozzle over the probe point
         curpos[0] += self.offset["x"]
         curpos[1] += self.offset["y"]
