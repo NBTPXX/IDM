@@ -237,6 +237,13 @@ class Scanner:
         self.default_calibration_method = config.get("calibration_method", "scan")
         self.calibration_method = self.default_calibration_method
         self.trigger_method = 0
+        gcode_macro = self.printer.load_object(config, "gcode_macro")
+        self.second_probe_activate_gcode = gcode_macro.load_template(
+            config, "second_probe_activate_gcode", ""
+        )
+        self.second_probe_deactivate_gcode = gcode_macro.load_template(
+            config, "second_probe_deactivate_gcode", ""
+        )
 
         self.trigger_distance = config.getfloat("trigger_distance", 2.0)
         self.trigger_dive_threshold = config.getfloat("trigger_dive_threshold", 1.5)
@@ -804,7 +811,14 @@ class Scanner:
                     kinematics.clear_homing_state([2])
             raise
 
-    def touch_probe(self, speed, skip=0, verbose=True, use_stream=True):
+    def touch_probe(
+        self,
+        speed,
+        skip=0,
+        verbose=True,
+        use_stream=True,
+        retract_after_trigger=True,
+    ):
         skipped_msg = ""
         toolhead = self.printer.lookup_object("toolhead")
         curtime = self.printer.get_reactor().monotonic()
@@ -815,7 +829,11 @@ class Scanner:
         pos[2] = status["axis_minimum"][2]
         try:
             if self.trigger_method in (2, 3):
-                epos = self._external_probe_move(pos, speed)
+                epos = self._external_probe_move(
+                    pos, speed, retract_after_trigger=retract_after_trigger
+                )
+            elif not retract_after_trigger:
+                epos = self._touch_move(pos, speed)
             elif use_stream:
                 epos = self._touch_move_with_slope_peak(pos, speed)
             else:
@@ -831,16 +849,27 @@ class Scanner:
         if verbose:
             if skip == 1:
                 skipped_msg = " - SKIPPED - result not added"
-            self.gcode.respond_info(
-                "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f)%s"
-                % (
-                    epos[0],
-                    epos[1],
-                    self.last_touch_trigger_height,
-                    self.last_touch_actual_height,
-                    skipped_msg,
+            if self.trigger_method == 1:
+                self.gcode.respond_info(
+                    "probe at %.3f,%.3f is z=%.6f (calculated_z=%.6f)%s"
+                    % (
+                        epos[0],
+                        epos[1],
+                        self.last_touch_trigger_height,
+                        self.last_touch_actual_height,
+                        skipped_msg,
+                    )
                 )
-            )
+            else:
+                self.gcode.respond_info(
+                    "probe at %.3f,%.3f is z=%.6f%s"
+                    % (
+                        epos[0],
+                        epos[1],
+                        self.last_touch_trigger_height,
+                        skipped_msg,
+                    )
+                )
         return epos[:3]
 
     def _capture_touch_sample(self, samples, debug_file=None):
@@ -897,7 +926,13 @@ class Scanner:
         return epos
 
     def _external_probe_move(
-        self, target, speed, retract_dist=None, retract_speed=None, z_max=None
+        self,
+        target,
+        speed,
+        retract_dist=None,
+        retract_speed=None,
+        z_max=None,
+        retract_after_trigger=True,
     ):
         if retract_dist is None:
             retract_dist = self.scanner_touch_config["retract_dist"]
@@ -908,13 +943,40 @@ class Scanner:
             z_max = self.toolhead.get_kinematics().get_status(curtime)[
                 "axis_maximum"
             ][2]
-        epos = self._touch_move(target, speed)
-        retract_position = self.toolhead.get_position()[:]
-        retract_position[2] = min(retract_position[2] + retract_dist, z_max)
-        self.toolhead.manual_move(retract_position, retract_speed)
-        self.toolhead.dwell(1.0)
-        self.toolhead.wait_moves()
+        self._second_probe_activate()
+        try:
+            epos = self._touch_move(target, speed)
+        except self.printer.command_error:
+            self._second_probe_deactivate()
+            raise
+        self._second_probe_deactivate()
+        if retract_after_trigger:
+            retract_position = self.toolhead.get_position()[:]
+            retract_position[2] = min(retract_position[2] + retract_dist, z_max)
+            self.toolhead.manual_move(retract_position, retract_speed)
+            self.toolhead.dwell(1.0)
+            self.toolhead.wait_moves()
         return epos
+
+    def _second_probe_activate(self):
+        self._run_second_probe_gcode(
+            self.second_probe_activate_gcode, "activate_gcode"
+        )
+
+    def _second_probe_deactivate(self):
+        self._run_second_probe_gcode(
+            self.second_probe_deactivate_gcode, "deactivate_gcode"
+        )
+
+    def _run_second_probe_gcode(self, template, script_name):
+        if self.trigger_method != 3:
+            return
+        start_pos = self.toolhead.get_position()[:3]
+        template.run_gcode_from_command()
+        if self.toolhead.get_position()[:3] != start_pos:
+            raise self.printer.command_error(
+                "Toolhead moved during second_probe_%s script" % script_name
+            )
 
     def _touch_move_with_slope_peak(
         self, target, speed, retract_dist=None, retract_speed=None, z_max=None
@@ -1455,7 +1517,8 @@ class Scanner:
         self._stop_streaming()
 
     def get_offsets(self, gcmd=None):
-        return self.offset["x"], self.offset["y"], self.trigger_distance
+        z_offset = self.trigger_distance if self.trigger_method == 0 else 0.0
+        return self.offset["x"], self.offset["y"], z_offset
 
     def get_lift_speed(self, gcmd=None):
         if gcmd is not None:
@@ -1510,7 +1573,13 @@ class Scanner:
 
         self._start_streaming()
         try:
-            epos = self._probe(speed, skip_samples, allow_faulty=allow_faulty)
+            retract_after_trigger = gcmd.get("HOME_ATTEMPT_NUM", None) is None
+            epos = self._probe(
+                speed,
+                skip_samples,
+                allow_faulty=allow_faulty,
+                retract_after_trigger=retract_after_trigger,
+            )
             if hasattr(manual_probe, "ProbeResult"):
                 (x, y, z) = self.get_offsets()
                 epos = manual_probe.ProbeResult(
@@ -1549,10 +1618,20 @@ class Scanner:
                 reason += probe.HINT_TIMEOUT
             raise self.printer.command_error(reason)
 
-    def _probe(self, speed, skip=0, num_samples=10, allow_faulty=False, verbose=True):
+    def _probe(
+        self,
+        speed,
+        skip=0,
+        num_samples=10,
+        allow_faulty=False,
+        verbose=True,
+        retract_after_trigger=True,
+    ):
         skipped_msg = ""
         if self.trigger_method != 0:
-            return self.touch_probe(speed, skip)
+            return self.touch_probe(
+                speed, skip, retract_after_trigger=retract_after_trigger
+            )
         target = self.trigger_distance
         tdt = self.trigger_dive_threshold
         (dist, samples) = self._sample(5, num_samples)
