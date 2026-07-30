@@ -1517,7 +1517,8 @@ class Scanner:
         self._stop_streaming()
 
     def get_offsets(self, gcmd=None):
-        return self.offset["x"], self.offset["y"], self.trigger_distance
+        z_offset = self.trigger_distance if self.trigger_method == 0 else 0.0
+        return self.offset["x"], self.offset["y"], z_offset
 
     def get_lift_speed(self, gcmd=None):
         if gcmd is not None:
