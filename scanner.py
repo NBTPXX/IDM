@@ -3561,18 +3561,7 @@ class ScannerEndstopWrapper:
     def _handle_homing_move_begin(self, hmove):
         if self.scanner.mcu_probe in hmove.get_mcu_endstops():
             self._require_hardware_probe()
-            etrsync = self._trsyncs[0]
-            if self.scanner.trigger_method == 1:
-                self.scanner.scanner_home_cmd.send(
-                    [
-                        etrsync.get_oid(),
-                        etrsync.REASON_ENDSTOP_HIT,
-                        0,
-                        self.scanner.detect_threshold_z,
-                        self.scanner.trigger_method,
-                    ]
-                )
-            elif self.scanner.trigger_method == 2:
+            if self.scanner.trigger_method == 2:
                 self.scanner.mcu_probe.probe_prepare(hmove)
 
     def _handle_homing_move_end(self, hmove):
@@ -3646,6 +3635,17 @@ class ScannerEndstopWrapper:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
 
+        if self.scanner.trigger_method == 1:
+            self.scanner.scanner_home_cmd.send(
+                [
+                    etrsync.get_oid(),
+                    etrsync.REASON_ENDSTOP_HIT,
+                    0,
+                    self.scanner.detect_threshold_z,
+                    self.scanner.trigger_method,
+                ]
+            )
+            return self._trigger_completion
         if self.scanner.trigger_method != 0:
             return self._trigger_completion
 
