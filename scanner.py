@@ -40,14 +40,15 @@ from .scanner_touch_mesh import (
     align_matrices_at_center,
     arc_retract_segments,
     apply_compensation,
-    difference_matrix,
     interpolate_matrix,
     matrix_range,
     needs_touch_retry,
+    parse_touch_retry_points,
     fill_round_mesh_edges,
     mesh_probe_indices,
     rounded_layer_mesh_trajectory,
     round_mesh_row_indices,
+    weighted_touch_correction,
 )
 from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
@@ -3841,6 +3842,12 @@ class ScannerMeshHelper:
         self.touch_retry_threshold = config.getfloat(
             "touch_mesh_retry_threshold", 0.05, minval=0
         )
+        try:
+            self.touch_retry_points = parse_touch_retry_points(
+                config.get("touch_mesh_retry_points", "")
+            )
+        except ValueError as error:
+            raise config.error(str(error))
         self.round_mesh_center_dwell = config.getfloat(
             "round_mesh_center_dwell", 0.25, minval=0
         )
@@ -4201,6 +4208,35 @@ class ScannerMeshHelper:
             )
             for xi, yi in touch_indices
         ]
+        configured_retry_points = []
+        for x, y in self.touch_retry_points:
+            outside_mesh = (
+                not self._is_round_position(x, y)
+                if self.is_round
+                else x < self.min_x or x > self.max_x or y < self.min_y or y > self.max_y
+            )
+            if outside_mesh:
+                raise gcmd.error(
+                    "touch_mesh_retry_points coordinate X:%.3f Y:%.3f is outside the mesh"
+                    % (x, y)
+                )
+            scanner_value = interpolate_matrix(
+                scanner_matrix,
+                self.min_x,
+                self.max_x,
+                self.min_y,
+                self.max_y,
+                self.res_x,
+                self.res_y,
+                x,
+                y,
+            )
+            if scanner_value is None:
+                raise gcmd.error(
+                    "touch_mesh_retry_points coordinate X:%.3f Y:%.3f is outside Scanner mesh"
+                    % (x, y)
+                )
+            configured_retry_points.append((x, y, scanner_value))
         try:
             self.scanner.check_temp(gcmd)
             self.scanner.trigger_method = 1
@@ -4287,6 +4323,37 @@ class ScannerMeshHelper:
                     next_xy,
                     speed,
                 )[2]
+
+            if configured_retry_points:
+                gcmd.respond_info(
+                    "Touch mesh configured retry points: %s"
+                    % (
+                        ", ".join(
+                            "X:%.3f Y:%.3f" % (x, y)
+                            for x, y, _ in configured_retry_points
+                        ),
+                    )
+                )
+            configured_touch_points = []
+            for retry_index, (x, y, scanner_value) in enumerate(configured_retry_points):
+                if retry_index == 0:
+                    self.scanner._zhop()
+                    toolhead.manual_move([x - xo, y - yo, None], speed)
+                toolhead.wait_moves()
+                self.scanner.trigger_method = 1
+                next_xy = (
+                    [configured_retry_points[retry_index + 1][0] - xo,
+                     configured_retry_points[retry_index + 1][1] - yo]
+                    if retry_index + 1 < len(configured_retry_points)
+                    else None
+                )
+                touch_value = self.scanner.run_touch_probe(
+                    gcmd,
+                    self.touch_samples,
+                    next_xy,
+                    speed,
+                )[2]
+                configured_touch_points.append((x, y, touch_value, scanner_value))
         finally:
             self.scanner.trigger_method = original_trigger_method
             self.scanner.set_accel(max_accel)
@@ -4299,7 +4366,44 @@ class ScannerMeshHelper:
             self.min_y,
             self.max_y,
         )
-        touch_diff = difference_matrix(aligned_touch, aligned_scanner)
+        touch_points_with_corrections = [
+            (
+                x,
+                y,
+                aligned_touch[yi][xi] - aligned_scanner[yi][xi],
+            )
+            for xi, yi, x, y in touch_points
+        ]
+        touch_center = interpolate_matrix(
+            touch_matrix,
+            self.min_x,
+            self.max_x,
+            self.min_y,
+            self.max_y,
+            self.touch_res_x,
+            self.touch_res_y,
+            (self.min_x + self.max_x) / 2.0,
+            (self.min_y + self.max_y) / 2.0,
+        )
+        scanner_center = interpolate_matrix(
+            scanner_at_touch,
+            self.min_x,
+            self.max_x,
+            self.min_y,
+            self.max_y,
+            self.touch_res_x,
+            self.touch_res_y,
+            (self.min_x + self.max_x) / 2.0,
+            (self.min_y + self.max_y) / 2.0,
+        )
+        touch_points_with_corrections.extend(
+            (
+                x,
+                y,
+                (touch_value - touch_center) - (scanner_value - scanner_center),
+            )
+            for x, y, touch_value, scanner_value in configured_touch_points
+        )
         compensation = []
         scanner_step_x = (self.max_x - self.min_x) / (self.res_x - 1)
         scanner_step_y = (self.max_y - self.min_y) / (self.res_y - 1)
@@ -4308,18 +4412,7 @@ class ScannerMeshHelper:
             row = []
             for xi in range(self.res_x):
                 x = self.min_x + xi * scanner_step_x
-                correction = interpolate_matrix(
-                    touch_diff,
-                    self.min_x,
-                    self.max_x,
-                    self.min_y,
-                    self.max_y,
-                    self.touch_res_x,
-                    self.touch_res_y,
-                    x,
-                    y,
-                )
-                row.append(correction if correction is not None else 0.0)
+                row.append(weighted_touch_correction(touch_points_with_corrections, x, y))
             compensation.append(row)
         profile = CompensationProfile(
             self.min_x,
@@ -4338,8 +4431,9 @@ class ScannerMeshHelper:
             "Touch mesh compensation range: %.6f to %.6f" % (minimum, maximum)
         )
         gcmd.respond_info(
-            "Touch mesh retried %d points above %.6f mm" % (
+            "Touch mesh retried %d threshold points and probed %d configured points above %.6f mm" % (
                 len(retry_points),
+                len(configured_retry_points),
                 self.touch_retry_threshold,
             )
         )

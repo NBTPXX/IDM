@@ -130,6 +130,53 @@ def needs_touch_retry(touch_value, scanner_value, threshold):
     return abs(touch_value - scanner_value) - threshold > 1.0e-9
 
 
+def parse_touch_retry_points(value):
+    if not value or not value.strip():
+        return []
+    points = []
+    for line_number, line in enumerate(value.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            x, y = (float(part.strip()) for part in line.split(","))
+        except ValueError as error:
+            raise ValueError(
+                "touch_mesh_retry_points line %d must contain X,Y" % line_number
+            ) from error
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError(
+                "touch_mesh_retry_points line %d must contain finite X,Y"
+                % line_number
+            )
+        points.append((x, y))
+    return points
+
+
+def weighted_touch_correction(points, x, y):
+    if not points:
+        return 0.0
+    nearest_distances = []
+    for index, point in enumerate(points):
+        distances = [
+            math.hypot(point[0] - other[0], point[1] - other[1])
+            for other_index, other in enumerate(points)
+            if other_index != index
+        ]
+        nearest_distances.append(min(distances) if distances else 0.0)
+
+    weighted_sum = 0.0
+    for point, influence_distance in zip(points, nearest_distances):
+        distance = math.hypot(x - point[0], y - point[1])
+        if distance < 1.0e-9:
+            return point[2]
+        if influence_distance <= 0.0 or distance >= influence_distance:
+            continue
+        weight = (1.0 - distance / influence_distance) ** 2
+        weighted_sum += point[2] * weight
+    return weighted_sum
+
+
 def round_mesh_row_indices(count, row_index):
     """Return the X indices inside Klipper's square-sampled circular mesh."""
     if count < 3 or count % 2 == 0:
