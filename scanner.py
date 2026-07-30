@@ -1138,12 +1138,19 @@ class Scanner:
         samples_retries = self.get_samples_tolerance_retries(gcmd)
         samples_result = self.get_samples_result(gcmd)
         pos = self.toolhead.get_position()
+        trigger_methods = {
+            0: "scan",
+            1: "touch",
+            2: "adxl",
+            3: "second_probe",
+        }
+        trigger_method = trigger_methods.get(self.trigger_method, "unknown")
         gcmd.respond_info(
             "PROBE at X:%.3f Y:%.3f Z:%.3f"
             " (samples=%d sample_retract_dist=%.3f"
             " speed=%.1f lift_speed=%.1f"
             " samples_tolerance=%.5f samples_retries=%d"
-            " samples_result=%s"
+            " samples_result=%s trigger_method=%d(%s)"
             ")\n"
             % (
                 pos[0],
@@ -1156,6 +1163,8 @@ class Scanner:
                 samples_tolerance,
                 samples_retries,
                 samples_result,
+                self.trigger_method,
+                trigger_method,
             )
         )
 
@@ -1310,16 +1319,19 @@ class Scanner:
             debug = gcmd.get_int("DEBUG", 0, minval=0, maxval=1) == 1
             curpos = self.run_touch_probe(gcmd, debug=debug)
             gcmd.respond_info(
-                "probe at %.3f,%.3f, median z=%.6f"
+                "probe at %.3f,%.3f, median trigger_z=%.6f calculated_z=%.6f"
                 % (
                     curpos[0],
                     curpos[1],
+                    self.last_touch_trigger_median_height,
                     self.last_touch_actual_median_height,
                 )
             )
             gcode_move = self.printer.lookup_object("gcode_move")
             offset = gcode_move.get_status()["homing_origin"].z
-            self.probe_calibrate_z = offset - curpos[2]
+            self.probe_calibrate_z = (
+                offset - self.last_touch_trigger_median_height
+            )
             self.probe_calibrate_finalize([0, 0, 0])
             self.set_temp(gcmd)
             self.extruder_target = 0
