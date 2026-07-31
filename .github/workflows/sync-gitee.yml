@@ -20,7 +20,21 @@ jobs:
       - name: Sync master and develop
         env:
           GH_TOKEN: ${{ github.token }}
+          GIT_TERMINAL_PROMPT: "0"
         run: |
-          git clone --bare https://gitee.com/NBTP/IDM.git source.git
-          git -C source.git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/heads/master:refs/heads/master refs/heads/develop:refs/heads/develop
+          git init --bare source.git
+          git -C source.git remote add origin https://gitee.com/NBTP/IDM.git
 
+          for attempt in 1 2 3; do
+            if timeout 120s git -C source.git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 fetch --depth=1 origin +refs/heads/master:refs/heads/master +refs/heads/develop:refs/heads/develop; then
+              break
+            fi
+
+            if [ "$attempt" = "3" ]; then
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          git -C source.git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/heads/master:refs/heads/master refs/heads/develop:refs/heads/develop
