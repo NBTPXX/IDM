@@ -609,8 +609,10 @@ def apply_compensation(profile, matrix, min_x, max_x, min_y, max_y):
     return compensated, uncovered
 
 
-def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
-    """Shift the Touch matrix to the Scanner center without altering Scanner Z."""
+def align_matrices_at_position(
+    matrix_a, matrix_b, min_x, max_x, min_y, max_y, reference_x, reference_y
+):
+    """Shift Touch to Scanner height at a shared reference position."""
     y_count = len(matrix_a)
     x_count = len(matrix_a[0]) if y_count else 0
     if (
@@ -622,16 +624,32 @@ def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
     ):
         raise ValueError("matrices require matching rectangular grids with at least two points per axis")
 
-    center_x = (min_x + max_x) / 2.0
-    center_y = (min_y + max_y) / 2.0
-    center_a = interpolate_matrix(
-        matrix_a, min_x, max_x, min_y, max_y, x_count, y_count, center_x, center_y
+    reference_a = interpolate_matrix(
+        matrix_a,
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+        x_count,
+        y_count,
+        reference_x,
+        reference_y,
     )
-    center_b = interpolate_matrix(
-        matrix_b, min_x, max_x, min_y, max_y, x_count, y_count, center_x, center_y
+    reference_b = interpolate_matrix(
+        matrix_b,
+        min_x,
+        max_x,
+        min_y,
+        max_y,
+        x_count,
+        y_count,
+        reference_x,
+        reference_y,
     )
+    if reference_a is None or reference_b is None:
+        raise ValueError("reference position is outside matrix bounds")
     return (
-        [[value + center_b - center_a for value in row] for row in matrix_a],
+        [[value + reference_b - reference_a for value in row] for row in matrix_a],
         [list(row) for row in matrix_b],
     )
 

@@ -37,7 +37,7 @@ from . import adxl345
 from .scanner_touch_mesh import (
     COMPENSATION_SECTION,
     CompensationProfile,
-    align_matrices_at_center,
+    align_matrices_at_position,
     arc_retract_segments,
     apply_compensation,
     interpolate_touch_residual,
@@ -4194,6 +4194,25 @@ class ScannerMeshHelper:
         touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
         xo = self.scanner.offset["x"]
         yo = self.scanner.offset["y"]
+        reference_x, reference_y = self.zero_ref_pos or (
+            (self.min_x + self.max_x) / 2.0,
+            (self.min_y + self.max_y) / 2.0,
+        )
+        outside_reference = (
+            not self._is_round_position(reference_x, reference_y)
+            if self.is_round
+            else (
+                reference_x < self.min_x
+                or reference_x > self.max_x
+                or reference_y < self.min_y
+                or reference_y > self.max_y
+            )
+        )
+        if outside_reference:
+            raise gcmd.error(
+                "zero_reference_position X:%.3f Y:%.3f is outside the mesh"
+                % (reference_x, reference_y)
+            )
         if probe_full_mesh:
             touch_indices = (
                 mesh_probe_indices(self.touch_res_x, self.touch_res_y, circular=True)
@@ -4218,8 +4237,8 @@ class ScannerMeshHelper:
                 (
                     None,
                     None,
-                    (self.min_x + self.max_x) / 2.0,
-                    (self.min_y + self.max_y) / 2.0,
+                    reference_x,
+                    reference_y,
                 )
             ]
         configured_retry_points = []
@@ -4254,7 +4273,6 @@ class ScannerMeshHelper:
         try:
             self.scanner.check_temp(gcmd)
             self.scanner.trigger_method = 1
-            center_touch_point = None
             for point_index, (xi, yi, x, y) in enumerate(touch_points):
                 if point_index == 0:
                     self.scanner._zhop()
@@ -4288,7 +4306,7 @@ class ScannerMeshHelper:
                     touch_matrix[yi][xi] = touch_value
                     scanner_at_touch[yi][xi] = scanner_value
                 else:
-                    center_touch_point = (x, y, touch_value, scanner_value)
+                    reference_touch_point = (x, y, touch_value, scanner_value)
 
             if probe_full_mesh and self.is_round:
                 touch_matrix = self._fill_round_mesh_edges(touch_matrix)
@@ -4296,13 +4314,15 @@ class ScannerMeshHelper:
 
             retry_points = []
             if probe_full_mesh:
-                aligned_touch, aligned_scanner = align_matrices_at_center(
+                aligned_touch, aligned_scanner = align_matrices_at_position(
                     touch_matrix,
                     scanner_at_touch,
                     self.min_x,
                     self.max_x,
                     self.min_y,
                     self.max_y,
+                    reference_x,
+                    reference_y,
                 )
                 retry_points = [
                     point
@@ -4380,13 +4400,15 @@ class ScannerMeshHelper:
             self.scanner.set_accel(max_accel)
 
         if probe_full_mesh:
-            aligned_touch, aligned_scanner = align_matrices_at_center(
+            aligned_touch, aligned_scanner = align_matrices_at_position(
                 touch_matrix,
                 scanner_at_touch,
                 self.min_x,
                 self.max_x,
                 self.min_y,
                 self.max_y,
+                reference_x,
+                reference_y,
             )
             touch_points_with_corrections = [
                 (
@@ -4396,7 +4418,7 @@ class ScannerMeshHelper:
                 )
                 for xi, yi, x, y in touch_points
             ]
-            touch_center = interpolate_matrix(
+            touch_reference = interpolate_matrix(
                 touch_matrix,
                 self.min_x,
                 self.max_x,
@@ -4404,10 +4426,10 @@ class ScannerMeshHelper:
                 self.max_y,
                 self.touch_res_x,
                 self.touch_res_y,
-                (self.min_x + self.max_x) / 2.0,
-                (self.min_y + self.max_y) / 2.0,
+                reference_x,
+                reference_y,
             )
-            scanner_center = interpolate_matrix(
+            scanner_reference = interpolate_matrix(
                 scanner_at_touch,
                 self.min_x,
                 self.max_x,
@@ -4415,17 +4437,17 @@ class ScannerMeshHelper:
                 self.max_y,
                 self.touch_res_x,
                 self.touch_res_y,
-                (self.min_x + self.max_x) / 2.0,
-                (self.min_y + self.max_y) / 2.0,
+                reference_x,
+                reference_y,
             )
         else:
-            center_x, center_y, touch_center, scanner_center = center_touch_point
-            touch_points_with_corrections = [(center_x, center_y, 0.0)]
+            reference_x, reference_y, touch_reference, scanner_reference = reference_touch_point
+            touch_points_with_corrections = [(reference_x, reference_y, 0.0)]
         touch_points_with_corrections.extend(
             (
                 x,
                 y,
-                (touch_value - touch_center) - (scanner_value - scanner_center),
+                (touch_value - touch_reference) - (scanner_value - scanner_reference),
             )
             for x, y, touch_value, scanner_value in configured_touch_points
         )
