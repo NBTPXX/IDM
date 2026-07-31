@@ -4425,6 +4425,8 @@ class ScannerMeshHelper:
         )
         profile.save(self.scanner.printer.lookup_object("configfile"))
         self.compensation_profile = profile
+        fused_matrix = self._apply_touch_compensation(scanner_matrix, gcmd)
+        self._apply_mesh(fused_matrix, gcmd)
         minimum, maximum = matrix_range(compensation)
         gcmd.respond_info("Touch mesh compensation: %s" % (json.dumps(compensation),))
         gcmd.respond_info(
@@ -4437,6 +4439,7 @@ class ScannerMeshHelper:
                 self.touch_retry_threshold,
             )
         )
+        gcmd.respond_info("Applied fused Scanner and Touch mesh")
         gcmd.respond_info("Run SAVE_CONFIG to persist touch mesh compensation")
 
     def _apply_touch_compensation(self, matrix, gcmd):
