@@ -3843,7 +3843,7 @@ class ScannerMeshHelper:
         )
         self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
         self.touch_mesh_decay_start_radius = config.getfloat(
-            "touch_mesh_decay_start_radius", 5.0, minval=0.0
+            "touch_mesh_decay_start_radius", 30.0, minval=0.0
         )
         self.touch_retry_threshold = config.getfloat(
             "touch_mesh_retry_threshold", 0.05, minval=0

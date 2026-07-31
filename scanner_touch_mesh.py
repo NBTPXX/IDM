@@ -153,7 +153,7 @@ def parse_touch_retry_points(value):
     return points
 
 
-def weighted_touch_correction(points, x, y, decay_start_radius=5.0):
+def weighted_touch_correction(points, x, y, decay_start_radius=30.0):
     if not points:
         return 0.0
     nearest_distances = []
