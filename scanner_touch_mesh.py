@@ -153,48 +153,27 @@ def parse_touch_retry_points(value):
     return points
 
 
-def weighted_touch_correction(points, x, y, decay_start_radius=30.0):
+def interpolate_touch_residual(points, x, y):
+    """Interpolate Touch-Scanner residuals across the Scanner mesh."""
     if not points:
         return 0.0
-    nearest_distances = []
-    for index, point in enumerate(points):
-        distances = [
-            math.hypot(point[0] - other[0], point[1] - other[1])
-            for other_index, other in enumerate(points)
-            if other_index != index
-        ]
-        nonzero_distances = [distance for distance in distances if distance >= 1.0e-9]
-        nearest_distances.append(min(nonzero_distances) if nonzero_distances else 0.0)
 
     exact_values = []
     weighted_sum = 0.0
     total_weight = 0.0
-    max_weight = 0.0
-    for point, influence_distance in zip(points, nearest_distances):
-        distance = math.hypot(x - point[0], y - point[1])
-        if distance < 1.0e-9:
-            exact_values.append(point[2])
+    for point_x, point_y, residual in points:
+        distance_squared = (x - point_x) ** 2 + (y - point_y) ** 2
+        if distance_squared < 1.0e-18:
+            exact_values.append(residual)
             continue
-        if influence_distance <= 0.0:
-            continue
-        decay_limit = (
-            min(influence_distance, decay_start_radius * 2.0)
-            if decay_start_radius > 0.0
-            else influence_distance
-        )
-        if distance >= decay_limit:
-            continue
-        normalized_distance = distance / decay_limit
-        weight = 1.0 - 0.2 * normalized_distance ** 2 - 0.8 * normalized_distance ** 3
-        weighted_sum += point[2] * weight
+        weight = 1.0 / distance_squared
+        weighted_sum += residual * weight
         total_weight += weight
-        max_weight = max(max_weight, weight)
     if exact_values:
         return sum(exact_values) / len(exact_values)
     if total_weight < 1.0e-9:
         return 0.0
-    touch_correction = weighted_sum / total_weight
-    return max_weight * touch_correction
+    return weighted_sum / total_weight
 
 
 def round_mesh_row_indices(count, row_index):

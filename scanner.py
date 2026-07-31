@@ -40,6 +40,7 @@ from .scanner_touch_mesh import (
     align_matrices_at_center,
     arc_retract_segments,
     apply_compensation,
+    interpolate_touch_residual,
     interpolate_matrix,
     matrix_range,
     needs_touch_retry,
@@ -48,7 +49,6 @@ from .scanner_touch_mesh import (
     mesh_probe_indices,
     rounded_layer_mesh_trajectory,
     round_mesh_row_indices,
-    weighted_touch_correction,
 )
 from mcu import MCU, MCU_trsync
 from clocksync import SecondarySync
@@ -3842,9 +3842,6 @@ class ScannerMeshHelper:
             "touch_mesh_probe_mode", {"full": "full", "custom": "custom"}, "full"
         )
         self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
-        self.touch_mesh_decay_start_radius = config.getfloat(
-            "touch_mesh_decay_start_radius", 30.0, minval=0.0
-        )
         self.touch_retry_threshold = config.getfloat(
             "touch_mesh_retry_threshold", 0.05, minval=0
         )
@@ -4440,14 +4437,7 @@ class ScannerMeshHelper:
             row = []
             for xi in range(self.res_x):
                 x = self.min_x + xi * scanner_step_x
-                row.append(
-                    weighted_touch_correction(
-                        touch_points_with_corrections,
-                        x,
-                        y,
-                        self.touch_mesh_decay_start_radius,
-                    )
-                )
+                row.append(interpolate_touch_residual(touch_points_with_corrections, x, y))
             compensation.append(row)
         profile = CompensationProfile(
             self.min_x,
