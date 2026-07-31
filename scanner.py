@@ -3839,7 +3839,7 @@ class ScannerMeshHelper:
             if self.touch_res_x < 2 or self.touch_res_y < 2:
                 raise config.error("touch_mesh_probe_count requires at least two points per axis")
         self.touch_mesh_probe_mode = config.getchoice(
-            "touch_mesh_probe_mode", {"full": "full", "center": "center"}, "full"
+            "touch_mesh_probe_mode", {"full": "full", "custom": "custom"}, "full"
         )
         self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
         self.touch_mesh_decay_start_radius = config.getfloat(
