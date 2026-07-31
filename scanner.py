@@ -4194,10 +4194,7 @@ class ScannerMeshHelper:
         touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
         xo = self.scanner.offset["x"]
         yo = self.scanner.offset["y"]
-        reference_x, reference_y = self.zero_ref_pos or (
-            (self.min_x + self.max_x) / 2.0,
-            (self.min_y + self.max_y) / 2.0,
-        )
+        reference_x, reference_y = map(float, self.scanner.touch_location)
         outside_reference = (
             not self._is_round_position(reference_x, reference_y)
             if self.is_round
@@ -4210,7 +4207,7 @@ class ScannerMeshHelper:
         )
         if outside_reference:
             raise gcmd.error(
-                "zero_reference_position X:%.3f Y:%.3f is outside the mesh"
+                "Touch reference location X:%.3f Y:%.3f is outside the mesh"
                 % (reference_x, reference_y)
             )
         if probe_full_mesh:
