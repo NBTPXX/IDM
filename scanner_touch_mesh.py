@@ -623,6 +623,7 @@ def apply_compensation(profile, matrix, min_x, max_x, min_y, max_y):
 
 
 def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
+    """Shift the Touch matrix to the Scanner center without altering Scanner Z."""
     y_count = len(matrix_a)
     x_count = len(matrix_a[0]) if y_count else 0
     if (
@@ -643,8 +644,8 @@ def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
         matrix_b, min_x, max_x, min_y, max_y, x_count, y_count, center_x, center_y
     )
     return (
-        [[value - center_a for value in row] for row in matrix_a],
-        [[value - center_b for value in row] for row in matrix_b],
+        [[value + center_b - center_a for value in row] for row in matrix_a],
+        [list(row) for row in matrix_b],
     )
 
 
