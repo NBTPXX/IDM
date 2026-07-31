@@ -163,18 +163,30 @@ def weighted_touch_correction(points, x, y):
             for other_index, other in enumerate(points)
             if other_index != index
         ]
-        nearest_distances.append(min(distances) if distances else 0.0)
+        nonzero_distances = [distance for distance in distances if distance >= 1.0e-9]
+        nearest_distances.append(min(nonzero_distances) if nonzero_distances else 0.0)
 
+    exact_values = []
     weighted_sum = 0.0
+    total_weight = 0.0
+    max_weight = 0.0
     for point, influence_distance in zip(points, nearest_distances):
         distance = math.hypot(x - point[0], y - point[1])
         if distance < 1.0e-9:
-            return point[2]
-        if influence_distance <= 0.0 or distance >= influence_distance:
+            exact_values.append(point[2])
             continue
-        weight = (1.0 - distance / influence_distance) ** 2
+        if influence_distance <= 0.0:
+            continue
+        weight = max(0.0, 1.0 - (distance / influence_distance) ** 3)
         weighted_sum += point[2] * weight
-    return weighted_sum
+        total_weight += weight
+        max_weight = max(max_weight, weight)
+    if exact_values:
+        return sum(exact_values) / len(exact_values)
+    if total_weight < 1.0e-9:
+        return 0.0
+    touch_correction = weighted_sum / total_weight
+    return max_weight * touch_correction
 
 
 def round_mesh_row_indices(count, row_index):
