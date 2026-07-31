@@ -130,6 +130,73 @@ def needs_touch_retry(touch_value, scanner_value, threshold):
     return abs(touch_value - scanner_value) - threshold > 1.0e-9
 
 
+def parse_touch_retry_points(value):
+    if not value or not value.strip():
+        return []
+    points = []
+    for line_number, line in enumerate(value.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            x, y = (float(part.strip()) for part in line.split(","))
+        except ValueError as error:
+            raise ValueError(
+                "touch_mesh_retry_points line %d must contain X,Y" % line_number
+            ) from error
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError(
+                "touch_mesh_retry_points line %d must contain finite X,Y"
+                % line_number
+            )
+        points.append((x, y))
+    return points
+
+
+def weighted_touch_correction(points, x, y, decay_start_radius=5.0):
+    if not points:
+        return 0.0
+    nearest_distances = []
+    for index, point in enumerate(points):
+        distances = [
+            math.hypot(point[0] - other[0], point[1] - other[1])
+            for other_index, other in enumerate(points)
+            if other_index != index
+        ]
+        nonzero_distances = [distance for distance in distances if distance >= 1.0e-9]
+        nearest_distances.append(min(nonzero_distances) if nonzero_distances else 0.0)
+
+    exact_values = []
+    weighted_sum = 0.0
+    total_weight = 0.0
+    max_weight = 0.0
+    for point, influence_distance in zip(points, nearest_distances):
+        distance = math.hypot(x - point[0], y - point[1])
+        if distance < 1.0e-9:
+            exact_values.append(point[2])
+            continue
+        if influence_distance <= 0.0:
+            continue
+        decay_limit = (
+            min(influence_distance, decay_start_radius * 2.0)
+            if decay_start_radius > 0.0
+            else influence_distance
+        )
+        if distance >= decay_limit:
+            continue
+        normalized_distance = distance / decay_limit
+        weight = 1.0 - 0.2 * normalized_distance ** 2 - 0.8 * normalized_distance ** 3
+        weighted_sum += point[2] * weight
+        total_weight += weight
+        max_weight = max(max_weight, weight)
+    if exact_values:
+        return sum(exact_values) / len(exact_values)
+    if total_weight < 1.0e-9:
+        return 0.0
+    touch_correction = weighted_sum / total_weight
+    return max_weight * touch_correction
+
+
 def round_mesh_row_indices(count, row_index):
     """Return the X indices inside Klipper's square-sampled circular mesh."""
     if count < 3 or count % 2 == 0:
@@ -564,6 +631,7 @@ def apply_compensation(profile, matrix, min_x, max_x, min_y, max_y):
 
 
 def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
+    """Shift the Touch matrix to the Scanner center without altering Scanner Z."""
     y_count = len(matrix_a)
     x_count = len(matrix_a[0]) if y_count else 0
     if (
@@ -584,8 +652,8 @@ def align_matrices_at_center(matrix_a, matrix_b, min_x, max_x, min_y, max_y):
         matrix_b, min_x, max_x, min_y, max_y, x_count, y_count, center_x, center_y
     )
     return (
-        [[value - center_a for value in row] for row in matrix_a],
-        [[value - center_b for value in row] for row in matrix_b],
+        [[value + center_b - center_a for value in row] for row in matrix_a],
+        [list(row) for row in matrix_b],
     )
 
 
