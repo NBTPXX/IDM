@@ -1139,12 +1139,19 @@ class Scanner:
         samples_retries = self.get_samples_tolerance_retries(gcmd)
         samples_result = self.get_samples_result(gcmd)
         pos = self.toolhead.get_position()
+        trigger_methods = {
+            0: "scan",
+            1: "touch",
+            2: "adxl",
+            3: "second_probe",
+        }
+        trigger_method = trigger_methods.get(self.trigger_method, "unknown")
         gcmd.respond_info(
             "PROBE at X:%.3f Y:%.3f Z:%.3f"
             " (samples=%d sample_retract_dist=%.3f"
             " speed=%.1f lift_speed=%.1f"
             " samples_tolerance=%.5f samples_retries=%d"
-            " samples_result=%s"
+            " samples_result=%s trigger_method=%d(%s)"
             ")\n"
             % (
                 pos[0],
@@ -1157,6 +1164,8 @@ class Scanner:
                 samples_tolerance,
                 samples_retries,
                 samples_result,
+                self.trigger_method,
+                trigger_method,
             )
         )
 
