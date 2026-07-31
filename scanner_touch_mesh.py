@@ -153,7 +153,7 @@ def parse_touch_retry_points(value):
     return points
 
 
-def weighted_touch_correction(points, x, y):
+def weighted_touch_correction(points, x, y, decay_start_radius=5.0):
     if not points:
         return 0.0
     nearest_distances = []
@@ -177,7 +177,15 @@ def weighted_touch_correction(points, x, y):
             continue
         if influence_distance <= 0.0:
             continue
-        weight = max(0.0, 1.0 - (distance / influence_distance) ** 3)
+        decay_limit = (
+            min(influence_distance, decay_start_radius * 2.0)
+            if decay_start_radius > 0.0
+            else influence_distance
+        )
+        if distance >= decay_limit:
+            continue
+        normalized_distance = distance / decay_limit
+        weight = 1.0 - 0.2 * normalized_distance ** 2 - 0.8 * normalized_distance ** 3
         weighted_sum += point[2] * weight
         total_weight += weight
         max_weight = max(max_weight, weight)

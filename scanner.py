@@ -3838,7 +3838,13 @@ class ScannerMeshHelper:
             )
             if self.touch_res_x < 2 or self.touch_res_y < 2:
                 raise config.error("touch_mesh_probe_count requires at least two points per axis")
+        self.touch_mesh_probe_mode = config.getchoice(
+            "touch_mesh_probe_mode", {"full": "full", "center": "center"}, "full"
+        )
         self.touch_samples = config.getint("touch_mesh_samples", 3, minval=1)
+        self.touch_mesh_decay_start_radius = config.getfloat(
+            "touch_mesh_decay_start_radius", 5.0, minval=0.0
+        )
         self.touch_retry_threshold = config.getfloat(
             "touch_mesh_retry_threshold", 0.05, minval=0
         )
@@ -4184,30 +4190,41 @@ class ScannerMeshHelper:
         original_trigger_method = self.scanner.trigger_method
         max_accel = toolhead.get_status(self.scanner.reactor.monotonic())["max_accel"]
         speed = gcmd.get_float("SPEED", self.speed, above=0.0)
+        probe_full_mesh = self.touch_mesh_probe_mode == "full"
         touch_matrix = [[None] * self.touch_res_x for _ in range(self.touch_res_y)]
         scanner_at_touch = [[None] * self.touch_res_x for _ in range(self.touch_res_y)]
         touch_step_x = (self.max_x - self.min_x) / (self.touch_res_x - 1)
         touch_step_y = (self.max_y - self.min_y) / (self.touch_res_y - 1)
         xo = self.scanner.offset["x"]
         yo = self.scanner.offset["y"]
-        touch_indices = (
-            mesh_probe_indices(self.touch_res_x, self.touch_res_y, circular=True)
-            if self.is_round
-            else [
-                (xi, yi)
-                for yi in range(self.touch_res_y)
-                for xi in range(self.touch_res_x)
-            ]
-        )
-        touch_points = [
-            (
-                xi,
-                yi,
-                self.min_x + xi * touch_step_x,
-                self.min_y + yi * touch_step_y,
+        if probe_full_mesh:
+            touch_indices = (
+                mesh_probe_indices(self.touch_res_x, self.touch_res_y, circular=True)
+                if self.is_round
+                else [
+                    (xi, yi)
+                    for yi in range(self.touch_res_y)
+                    for xi in range(self.touch_res_x)
+                ]
             )
-            for xi, yi in touch_indices
-        ]
+            touch_points = [
+                (
+                    xi,
+                    yi,
+                    self.min_x + xi * touch_step_x,
+                    self.min_y + yi * touch_step_y,
+                )
+                for xi, yi in touch_indices
+            ]
+        else:
+            touch_points = [
+                (
+                    None,
+                    None,
+                    (self.min_x + self.max_x) / 2.0,
+                    (self.min_y + self.max_y) / 2.0,
+                )
+            ]
         configured_retry_points = []
         for x, y in self.touch_retry_points:
             outside_mesh = (
@@ -4240,6 +4257,7 @@ class ScannerMeshHelper:
         try:
             self.scanner.check_temp(gcmd)
             self.scanner.trigger_method = 1
+            center_touch_point = None
             for point_index, (xi, yi, x, y) in enumerate(touch_points):
                 if point_index == 0:
                     self.scanner._zhop()
@@ -4266,44 +4284,50 @@ class ScannerMeshHelper:
                     if point_index + 1 < len(touch_points)
                     else None
                 )
-                touch_matrix[yi][xi] = self.scanner.run_touch_probe(
-                    gcmd, 1, next_xy, speed
+                touch_value = self.scanner.run_touch_probe(
+                    gcmd, 1 if probe_full_mesh else self.touch_samples, next_xy, speed
                 )[2]
-                scanner_at_touch[yi][xi] = scanner_value
+                if probe_full_mesh:
+                    touch_matrix[yi][xi] = touch_value
+                    scanner_at_touch[yi][xi] = scanner_value
+                else:
+                    center_touch_point = (x, y, touch_value, scanner_value)
 
-            if self.is_round:
+            if probe_full_mesh and self.is_round:
                 touch_matrix = self._fill_round_mesh_edges(touch_matrix)
                 scanner_at_touch = self._fill_round_mesh_edges(scanner_at_touch)
 
-            aligned_touch, aligned_scanner = align_matrices_at_center(
-                touch_matrix,
-                scanner_at_touch,
-                self.min_x,
-                self.max_x,
-                self.min_y,
-                self.max_y,
-            )
-            retry_points = [
-                point
-                for point in touch_points
-                if needs_touch_retry(
-                    aligned_touch[point[1]][point[0]],
-                    aligned_scanner[point[1]][point[0]],
-                    self.touch_retry_threshold,
+            retry_points = []
+            if probe_full_mesh:
+                aligned_touch, aligned_scanner = align_matrices_at_center(
+                    touch_matrix,
+                    scanner_at_touch,
+                    self.min_x,
+                    self.max_x,
+                    self.min_y,
+                    self.max_y,
                 )
-            ]
-            if retry_points:
-                gcmd.respond_info(
-                    "Touch mesh retry points: %s"
-                    % (
-                        ", ".join(
-                            "X:%.3f Y:%.3f" % (point[2], point[3])
-                            for point in retry_points
-                        ),
+                retry_points = [
+                    point
+                    for point in touch_points
+                    if needs_touch_retry(
+                        aligned_touch[point[1]][point[0]],
+                        aligned_scanner[point[1]][point[0]],
+                        self.touch_retry_threshold,
                     )
-                )
-            else:
-                gcmd.respond_info("Touch mesh retry points: none")
+                ]
+                if retry_points:
+                    gcmd.respond_info(
+                        "Touch mesh retry points: %s"
+                        % (
+                            ", ".join(
+                                "X:%.3f Y:%.3f" % (point[2], point[3])
+                                for point in retry_points
+                            ),
+                        )
+                    )
+                else:
+                    gcmd.respond_info("Touch mesh retry points: none")
 
             for retry_index, (xi, yi, x, y) in enumerate(retry_points):
                 if retry_index == 0:
@@ -4358,44 +4382,48 @@ class ScannerMeshHelper:
             self.scanner.trigger_method = original_trigger_method
             self.scanner.set_accel(max_accel)
 
-        aligned_touch, aligned_scanner = align_matrices_at_center(
-            touch_matrix,
-            scanner_at_touch,
-            self.min_x,
-            self.max_x,
-            self.min_y,
-            self.max_y,
-        )
-        touch_points_with_corrections = [
-            (
-                x,
-                y,
-                aligned_touch[yi][xi] - aligned_scanner[yi][xi],
+        if probe_full_mesh:
+            aligned_touch, aligned_scanner = align_matrices_at_center(
+                touch_matrix,
+                scanner_at_touch,
+                self.min_x,
+                self.max_x,
+                self.min_y,
+                self.max_y,
             )
-            for xi, yi, x, y in touch_points
-        ]
-        touch_center = interpolate_matrix(
-            touch_matrix,
-            self.min_x,
-            self.max_x,
-            self.min_y,
-            self.max_y,
-            self.touch_res_x,
-            self.touch_res_y,
-            (self.min_x + self.max_x) / 2.0,
-            (self.min_y + self.max_y) / 2.0,
-        )
-        scanner_center = interpolate_matrix(
-            scanner_at_touch,
-            self.min_x,
-            self.max_x,
-            self.min_y,
-            self.max_y,
-            self.touch_res_x,
-            self.touch_res_y,
-            (self.min_x + self.max_x) / 2.0,
-            (self.min_y + self.max_y) / 2.0,
-        )
+            touch_points_with_corrections = [
+                (
+                    x,
+                    y,
+                    aligned_touch[yi][xi] - aligned_scanner[yi][xi],
+                )
+                for xi, yi, x, y in touch_points
+            ]
+            touch_center = interpolate_matrix(
+                touch_matrix,
+                self.min_x,
+                self.max_x,
+                self.min_y,
+                self.max_y,
+                self.touch_res_x,
+                self.touch_res_y,
+                (self.min_x + self.max_x) / 2.0,
+                (self.min_y + self.max_y) / 2.0,
+            )
+            scanner_center = interpolate_matrix(
+                scanner_at_touch,
+                self.min_x,
+                self.max_x,
+                self.min_y,
+                self.max_y,
+                self.touch_res_x,
+                self.touch_res_y,
+                (self.min_x + self.max_x) / 2.0,
+                (self.min_y + self.max_y) / 2.0,
+            )
+        else:
+            center_x, center_y, touch_center, scanner_center = center_touch_point
+            touch_points_with_corrections = [(center_x, center_y, 0.0)]
         touch_points_with_corrections.extend(
             (
                 x,
@@ -4412,7 +4440,14 @@ class ScannerMeshHelper:
             row = []
             for xi in range(self.res_x):
                 x = self.min_x + xi * scanner_step_x
-                row.append(weighted_touch_correction(touch_points_with_corrections, x, y))
+                row.append(
+                    weighted_touch_correction(
+                        touch_points_with_corrections,
+                        x,
+                        y,
+                        self.touch_mesh_decay_start_radius,
+                    )
+                )
             compensation.append(row)
         profile = CompensationProfile(
             self.min_x,
@@ -4433,7 +4468,8 @@ class ScannerMeshHelper:
             "Touch mesh compensation range: %.6f to %.6f" % (minimum, maximum)
         )
         gcmd.respond_info(
-            "Touch mesh retried %d threshold points and probed %d configured points above %.6f mm" % (
+            "Touch mesh probe mode %s retried %d threshold points and probed %d configured points above %.6f mm" % (
+                self.touch_mesh_probe_mode,
                 len(retry_points),
                 len(configured_retry_points),
                 self.touch_retry_threshold,
