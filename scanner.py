@@ -4458,6 +4458,21 @@ class ScannerMeshHelper:
                 x = self.min_x + xi * scanner_step_x
                 row.append(interpolate_touch_residual(touch_points_with_corrections, x, y))
             compensation.append(row)
+        reference_compensation = interpolate_matrix(
+            compensation,
+            self.min_x,
+            self.max_x,
+            self.min_y,
+            self.max_y,
+            self.res_x,
+            self.res_y,
+            reference_x,
+            reference_y,
+        )
+        compensation = [
+            [value - reference_compensation for value in row]
+            for row in compensation
+        ]
         profile = CompensationProfile(
             self.min_x,
             self.max_x,
