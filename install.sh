@@ -12,14 +12,18 @@ fi
 
 BKDIR="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 
-if [ ! -d "$KDIR" ] || [ ! -d "$KENV" ]; then
-    echo "idm: klipper or klippy env doesn't exist"
+if [ ! -d "$KDIR" ]; then
+    echo "idm: klipper directory doesn't exist"
     exit 1
 fi
 
-# install idm requirements to env
+# Install IDM requirements in Klipper's environment when available.
 echo "idm: installing python requirements to env, this may take 10+ minutes."
-"${KENV}/bin/pip" install -r "${BKDIR}/requirements.txt"
+if [ -x "${KENV}/bin/pip" ]; then
+    "${KENV}/bin/pip" install --break-system-packages -r "${BKDIR}/requirements.txt"
+else
+    python3 -m pip install --break-system-packages -r "${BKDIR}/requirements.txt"
+fi
 
 # Update links to Klipper extra modules.
 echo "IDM: linking modules into klipper"
