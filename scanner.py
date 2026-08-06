@@ -2958,35 +2958,29 @@ class Scanner:
             self.gcode.respond_info("Nothing to do: Z Offset is 0")
             return
 
-        if not self.model:
-            raise self.gcode.error(
-                "You must calibrate your model first, " "use SCANNER_CALIBRATE."
-            )
-
-        # We use the model code to save the new offset, but we can't actually
-        # apply that offset yet because the gcode_offset is still in effect.
-        # If the user continues to do stuff after this, the newly set model
-        # offset would compound with the gcode offset. To ensure this doesn't
-        # happen, we revert to the old model offset afterwards.
-        # Really, the user should just be calling `SAVE_CONFIG` now.
-        if (
-            self.calibration_method == "touch"
-            and gcmd.get("TARGET", "None").lower() == "touch"
-        ):
+        if self.calibration_method != "scan":
             self.scanner_touch_config["z_offset"] += offset
+            self.offset["z"] += offset
             configfile = self.printer.lookup_object("configfile")
             configfile.set(
                 "scanner",
                 "scanner_touch_z_offset",
                 "%.3f" % self.scanner_touch_config["z_offset"],
             )
+            configfile.set("scanner", "z_offset", "%.3f" % self.offset["z"])
             gcmd.respond_info(
-                f"Touch offset has been updated by {offset:.3f} to {self.scanner_touch_config['z_offset']:.3f}.\n"
+                f"Probe offsets have been updated by {offset:.3f}: "
+                f"z_offset={self.offset['z']:.3f}, "
+                f"scanner_touch_z_offset={self.scanner_touch_config['z_offset']:.3f}.\n"
                 "You must run the SAVE_CONFIG command now to update the\n"
                 "printer config file and restart the printer."
             )
 
         else:
+            if not self.model:
+                raise self.gcode.error(
+                    "You must calibrate your model first, use SCANNER_CALIBRATE."
+                )
             self.model.offset += offset
             self.model.save(self, False)
             gcmd.respond_info(
