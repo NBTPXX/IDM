@@ -1,21 +1,23 @@
 #!/bin/bash
 
-KDIR="${HOME}/klipper"
-KENV="${HOME}/klippy-env"
-
-if [ ! -d "$KDIR" ] && [ -d "/data/klipper" ]; then
-    KDIR="/data/klipper"
-fi
-if [ ! -d "$KENV" ] && [ -d "/data/klippy-env" ]; then
-    KENV="/data/klippy-env"
+KDIR="${KLIPPER_DIR:-}"
+if [ -z "$KDIR" ]; then
+    for candidate in /data/klipper "${HOME}/klipper"; do
+        if [ -d "$candidate" ]; then
+            KDIR="$candidate"
+            break
+        fi
+    done
 fi
 
 BKDIR="$( cd -- "$(dirname "$0")" >/dev/null 2>&1 ; pwd -P )"
 
-if [ ! -d "$KDIR" ]; then
-    echo "idm: klipper directory doesn't exist"
+if [ -z "$KDIR" ] || [ ! -d "$KDIR" ]; then
+    echo "idm: set KLIPPER_DIR to the Klipper directory"
     exit 1
 fi
+
+KENV="${KLIPPY_ENV:-${KDIR%/klipper}/klippy-env}"
 
 # Install IDM requirements in Klipper's environment when available.
 echo "idm: installing python requirements to env, this may take 10+ minutes."
@@ -32,8 +34,12 @@ for file in idm.py scanner.py scanner_touch_mesh.py; do
         rm "${KDIR}/klippy/extras/${file}"
     fi
     ln -s "${BKDIR}/${file}" "${KDIR}/klippy/extras/${file}"
-    if ! grep -q "klippy/extras/${file}" "${KDIR}/.git/info/exclude"; then
-        echo "klippy/extras/${file}" >> "${KDIR}/.git/info/exclude"
+    exclude_file="${KDIR}/.git/info/exclude"
+    if [ -d "${KDIR}/.git/info" ]; then
+        touch "$exclude_file"
+        if ! grep -q "klippy/extras/${file}" "$exclude_file"; then
+            echo "klippy/extras/${file}" >> "$exclude_file"
+        fi
     fi
 done
 echo "idm: installation successful."
