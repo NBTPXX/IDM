@@ -1177,7 +1177,6 @@ class Scanner:
         max_accel = self.toolhead.get_status(curtime)["max_accel"]
         uses_hardware_trigger = self.trigger_method in (2, 3)
         try:
-            self.set_accel(self.scanner_touch_config["accel"])
             while len(positions) < sample_count:
                 samples = []
                 debug_file = None
@@ -1198,7 +1197,11 @@ class Scanner:
                             self._capture_touch_sample(samples, debug_file), latency=1
                         )
                     with probe_context:
+                        # Limit acceleration only while descending into the bed.
+                        self.set_accel(self.scanner_touch_config["accel"])
                         pos = self.phoming.probing_move(self.mcu_probe, target, speed)
+                        # Point-to-point motion uses the printer's configured acceleration.
+                        self.set_accel(max_accel)
                         pos[2] += self.offset["z"]
                         positions.append(pos)
                         z_positions = [p[2] for p in positions]
