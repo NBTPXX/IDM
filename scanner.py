@@ -1349,9 +1349,14 @@ class Scanner:
         curpos = self.run_probe(gcmd)
         self.probe_calibrate_z = curpos[2] - self.trigger_distance
         # Move the nozzle over the probe point
-        curpos[0] += self.offset["x"]
-        curpos[1] += self.offset["y"]
-        self._move(curpos, self.speed)
+        self._move(
+            [
+                curpos[0] + self.offset["x"],
+                curpos[1] + self.offset["y"],
+                curpos[2],
+            ],
+            self.speed,
+        )
         # Start manual probe
         manual_probe.ManualProbeHelper(
             self.printer, gcmd, self.probe_calibrate_finalize
