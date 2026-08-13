@@ -19,13 +19,20 @@ fi
 
 KENV="${KLIPPY_ENV:-${KDIR%/klipper}/klippy-env}"
 
-# Install IDM requirements in Klipper's environment when available.
-echo "idm: installing python requirements to env, this may take 10+ minutes."
-if [ -x "${KENV}/bin/pip" ]; then
-    "${KENV}/bin/pip" install --break-system-packages -r "${BKDIR}/requirements.txt"
-else
-    python3 -m pip install --break-system-packages -r "${BKDIR}/requirements.txt"
-fi
+# The /data Klipper installation manages its Python dependencies separately.
+case "$KDIR" in
+    /data/*)
+        echo "idm: skipping python requirements for Klipper under /data"
+        ;;
+    *)
+        echo "idm: installing python requirements to env, this may take 10+ minutes."
+        if [ -x "${KENV}/bin/pip" ]; then
+            "${KENV}/bin/pip" install --break-system-packages -r "${BKDIR}/requirements.txt"
+        else
+            python3 -m pip install --break-system-packages -r "${BKDIR}/requirements.txt"
+        fi
+        ;;
+esac
 
 # Update links to Klipper extra modules.
 echo "IDM: linking modules into klipper"
