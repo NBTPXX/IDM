@@ -144,12 +144,11 @@ class IDMProbe:
             self._mcu.register_serial_response(
                 self._handle_idm_data, "idm_data clock=%u data=%u temp=%u"
             )
-            self._mcu.register_serial_response(
-                self._handle_idm_chipid, "idm_chipid chip_id=%s tag_match=%c"
-            )
         else:
             self._mcu.register_response(self._handle_idm_data, "idm_data")
-            self._mcu.register_response(self._handle_idm_chipid, "idm_chipid")
+        # The idm_chipid response is registered later, in _handle_mcu_identify,
+        # once the firmware message table is known (older IDM firmware does not
+        # include the idm_chipid interface).
         # Probe results
         self.results = []
         # Register webhooks
@@ -427,6 +426,24 @@ class IDMProbe:
             self.trapq = self.toolhead.get_trapq()
         except msgproto.error as e:
             raise msgproto.error(str(e))
+        # The firmware message table is now known; register the idm_chipid
+        # response only when the connected firmware supports it.
+        self._register_chipid_response()
+
+    def _register_chipid_response(self):
+        # Older IDM firmware does not include the idm_chipid interface. Skip
+        # registering its response handler on such firmware, otherwise newer
+        # klippy versions raise an "Unknown command" error at startup.
+        chipid_msg = "idm_chipid chip_id=%s tag_match=%c"
+        check = getattr(self._mcu, "check_valid_response", None)
+        if check is None:
+            check = getattr(self._mcu, "try_lookup_command", None)
+        if check is not None and not check(chipid_msg):
+            return
+        if hasattr(self._mcu, "register_serial_response"):
+            self._mcu.register_serial_response(self._handle_idm_chipid, chipid_msg)
+        else:
+            self._mcu.register_response(self._handle_idm_chipid, "idm_chipid")
 
     def _build_config(self):
         self.idm_stream_cmd = self._mcu.lookup_command(
