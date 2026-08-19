@@ -26,7 +26,9 @@ jobs:
           git -C source.git remote add origin https://gitee.com/NBTP/IDM.git
 
           for attempt in 1 2 3; do
-            if timeout 120s git -C source.git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 fetch --depth=1 origin +refs/heads/master:refs/heads/master +refs/heads/develop:refs/heads/develop; then
+            # 完整 fetch（不用 --depth=1）：shallow 克隆缺少父提交对象，push 时
+            # git 无法验证 fast-forward，会报 "fetch first" 拒绝（见 run #78-#89）。
+            if timeout 120s git -C source.git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 fetch origin +refs/heads/master:refs/heads/master +refs/heads/develop:refs/heads/develop; then
               break
             fi
 
