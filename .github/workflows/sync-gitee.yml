@@ -15,28 +15,38 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Sync master and develop
         env:
           GH_TOKEN: ${{ github.token }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
           GIT_TERMINAL_PROMPT: "0"
         run: |
           git init --bare source.git
-          git -C source.git remote add origin https://gitee.com/NBTP/IDM.git
+          if [ -n "${GITEE_TOKEN:-}" ]; then
+            git -C source.git remote add origin "https://NBTP:${GITEE_TOKEN}@gitee.com/NBTP/IDM.git"
+          else
+            git -C source.git remote add origin https://gitee.com/NBTP/IDM.git
+          fi
+          git -C source.git config http.version HTTP/1.1
 
-          for attempt in 1 2 3; do
+          delay=30
+          for attempt in 1 2 3 4 5; do
             # 完整 fetch（不用 --depth=1）：shallow 克隆缺少父提交对象，push 时
             # git 无法验证 fast-forward，会报 "fetch first" 拒绝（见 run #78-#89）。
-            if timeout 120s git -C source.git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 fetch origin +refs/heads/master:refs/heads/master +refs/heads/develop:refs/heads/develop; then
+            if timeout 180s git -C source.git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 fetch origin +refs/heads/master:refs/heads/master +refs/heads/develop:refs/heads/develop; then
               break
             fi
 
-            if [ "$attempt" = "3" ]; then
+            if [ "$attempt" = "5" ]; then
+              echo "Gitee fetch failed after 5 attempts (often HTTP 429)"
               exit 1
             fi
 
-            sleep 10
+            echo "fetch attempt ${attempt} failed, sleep ${delay}s"
+            sleep "$delay"
+            delay=$((delay * 2))
           done
 
           git -C source.git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" refs/heads/master:refs/heads/master refs/heads/develop:refs/heads/develop
